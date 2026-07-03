@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "product-monitor"
+version = "1.0.0"
+description = "Asyncio scraper that watches four Hungarian secondhand marketplaces for specific products under a price ceiling and emails a summary of new/cheaper listings"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "David Afra" }]
+dependencies = ["aiohttp==3.9.1", "aiofiles==25.1.0", "beautifulsoup4==4.15.0", "lru-dict==1.4.1"]
+
+[project.optional-dependencies]
+memory-logging = ["psutil==7.2.2"]
+dev = [
+    "pytest==9.1.1",
+    "black==26.5.1",
+    "ruff==0.15.20",
+    "mypy==2.1.0",
+    "types-beautifulsoup4==4.12.0.20250516",
+]
+
+[project.urls]
+Repository = "https://github.com/griffffffin/product-monitor"
+
+[project.scripts]
+product-monitor = "product_monitor.main:main"
+
+[tool.setuptools.packages.find]
+include = ["product_monitor*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

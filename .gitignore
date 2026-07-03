@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+
+# Runtime data / logs — personal/machine-specific, doesn't belong in the repo
+seen-products.json
+*.log
+
+# Real search config — personal (what the user is shopping for); ship
+# product-monitor-config.example.json instead
+product-monitor-config.json
+
+# Secrets — must never end up in the repo
+.env
+secrets.env
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code local settings — machine-specific, not meant to be shared.
+# .claude/settings.json itself (project-level hooks config) stays tracked.
+.claude/settings.local.json

@@ -1,0 +1,32 @@
+{
+  "searches": [
+    {
+      "site": "HardverApro",
+      "search_terms": ["example", "product"],
+      "max_price": 50000,
+      "url": "https://hardverapro.hu/aprok/keres.php?stext=example"
+    },
+    {
+      "site": "Vatera",
+      "search_terms": ["example", "product"],
+      "max_price": 15000
+    },
+    {
+      "site": "Jofogas",
+      "search_terms": ["example", "product"],
+      "max_price": 15000
+    },
+    {
+      "site": "Moly",
+      "max_price": 10000,
+      "url": "https://moly.hu/konyvek/example-book/elado-peldanyok"
+    }
+  ],
+
+  "check_interval": 10800,
+  "cleanup_days": 60,
+  "max_concurrent_requests": 5,
+  "request_timeout": 60,
+  "log_level": "INFO",
+  "max_log_size_mb": 100
+}

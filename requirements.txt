@@ -1,0 +1,8 @@
+aiohttp==3.9.1
+aiofiles==25.1.0
+beautifulsoup4==4.15.0
+lru-dict==1.4.1
+
+# optional: enables memory-usage logging in check_memory_usage(); the
+# service runs fine without it (import is wrapped in try/except)
+psutil==7.2.2
