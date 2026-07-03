@@ -72,14 +72,14 @@ It runs forever (a `while` loop with an interruptible sleep between cycles) unti
 
 ## Example output
 
-The log format below is real (captured from an actual single-cycle run of the `product_monitor` package against the live sites, using a generic `"könyv"` (book) search term — not the owner's real configured searches, which are personal). The individual listing titles are placeholder/illustrative, not real sellers' listings — this project doesn't publish real scraped third-party content in its docs. Note the logger name (`product_monitor.scrapers.base`) reflects the real package structure, not a flat single-file layout:
+The log structure/timing below is real (captured from an actual single-cycle run of the `product_monitor` package against the live sites, using a generic `"könyv"` (book) search term — not the owner's real configured searches, which are personal). The real log messages are in Hungarian (see the Language note above) — this is the same output translated to English for readability here. The individual listing titles are placeholder/illustrative, not real sellers' listings — this project doesn't publish real scraped third-party content in its docs. Note the logger name (`product_monitor.scrapers.base`) reflects the real package structure, not a flat single-file layout:
 
 ```
-2026-07-03 19:27:52,514 - product_monitor.scrapers.base - INFO - Vatera: Példa Szerző: Egy Kitalált Regény Címe - 3 000 Ft
-2026-07-03 19:27:52,515 - product_monitor.scrapers.base - INFO - Vatera: Minta Kiadó - Illusztrált Példakönyv - 450 Ft
-2026-07-03 19:27:52,516 - product_monitor.scrapers.base - INFO - Vatera: Antikvár könyvcsomag (illusztrációs célú placeholder) - 4 000 Ft
-2026-07-03 19:27:52,556 - root - INFO - Email küldés 35 hirdetésről.
-2026-07-03 19:27:52,556 - root - INFO - Sikeres ciklus.
+2026-07-03 19:27:52,514 - product_monitor.scrapers.base - INFO - Vatera: Sample Author - A Made-Up Novel Title - 3,000 Ft
+2026-07-03 19:27:52,515 - product_monitor.scrapers.base - INFO - Vatera: Sample Publisher - Illustrated Example Book - 450 Ft
+2026-07-03 19:27:52,516 - product_monitor.scrapers.base - INFO - Vatera: Used book bundle (illustrative placeholder) - 4,000 Ft
+2026-07-03 19:27:52,556 - root - INFO - Email sent for 35 listings.
+2026-07-03 19:27:52,556 - root - INFO - Cycle completed successfully.
 ```
 
 (35 matches is the real count from that run — a broad, unfiltered term like `"könyv"` matches a lot on a general marketplace, though less than before since Vatera's own live inventory changes constantly; a real configured search combines a term with a tight `max_price`, which is what keeps production email volume low.)
