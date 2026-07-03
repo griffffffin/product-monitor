@@ -1,5 +1,9 @@
 # product-monitor
 
+[![Tests](https://github.com/griffffffin/product-monitor/actions/workflows/tests.yml/badge.svg)](https://github.com/griffffffin/product-monitor/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 An asyncio-based Python scraper that watches four Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price.
 
 ## Why this exists
