@@ -70,19 +70,25 @@ python3 -m product_monitor.main
 
 It runs forever (a `while` loop with an interruptible sleep between cycles) until it receives `SIGTERM`/`SIGINT` — in production that's a systemd service, see `CLAUDE.md` for the unit file.
 
-## Example output
+## Sample output
 
-The log structure/timing below is real (captured from an actual single-cycle run of the `product_monitor` package against the live sites, using a generic `"könyv"` (book) search term — not the owner's real configured searches, which are personal). The real log messages are in Hungarian (see the Language note above) — this is the same output translated to English for readability here. The individual listing titles are placeholder/illustrative, not real sellers' listings — this project doesn't publish real scraped third-party content in its docs. Note the logger name (`product_monitor.scrapers.base`) reflects the real package structure, not a flat single-file layout:
+Console output from a manual run - the format/timing is real (captured from an actual single-cycle run of the `product_monitor` package against the live sites, using a generic `"könyv"` (book) search term, not the owner's real configured searches, which are personal). Unlike house-monitor, product-monitor doesn't have a separate compact/`NOTICE`-level console format - a manual run prints the same full-detail lines you'd find in the log file. The real log messages are in Hungarian (see the Language note above); this image shows them translated to English for readability. The individual listing titles are placeholder/illustrative, not real sellers' listings - this project doesn't publish real scraped third-party content in its docs. Note the logger name (`product_monitor.scrapers.base`) reflects the real package structure, not a flat single-file layout:
+
+![Console output from a manual run](docs/images/console-demo.png)
+
+The email itself is grouped by site. The real emails are in Hungarian (the owner's language) - this is the same layout translated to English:
 
 ```
-2026-07-03 19:27:52,514 - product_monitor.scrapers.base - INFO - Vatera: Sample Author - A Made-Up Novel Title - 3,000 Ft
-2026-07-03 19:27:52,515 - product_monitor.scrapers.base - INFO - Vatera: Sample Publisher - Illustrated Example Book - 450 Ft
-2026-07-03 19:27:52,516 - product_monitor.scrapers.base - INFO - Vatera: Used book bundle (illustrative placeholder) - 4,000 Ft
-2026-07-03 19:27:52,556 - root - INFO - Email sent for 35 listings.
-2026-07-03 19:27:52,556 - root - INFO - Cycle completed successfully.
-```
+==============    Vatera (2 listings)    ==============
 
-(35 matches is the real count from that run — a broad, unfiltered term like `"könyv"` matches a lot on a general marketplace, though less than before since Vatera's own live inventory changes constantly; a real configured search combines a term with a tight `max_price`, which is what keeps production email volume low.)
+1. Sample Author - A Made-Up Novel Title
+   Price: 3,000 Ft
+   Link: https://www.vatera.hu/...
+
+2. Sample Publisher - Illustrated Example Book
+   Price: 450 Ft
+   Link: https://www.vatera.hu/...
+```
 
 ## Tests
 
