@@ -382,7 +382,7 @@ class MultiMarketplaceMonitor:
         for ad in ads:
             ads_by_site[ad.site].append(ad)
 
-        subject = f"Új hirdetések: {len(ads)} db"
+        subject = f"Hirdetések: {len(ads)} db"
 
         # StringBuilder pattern
         body_parts = ["-" * 148, "\n\n"]

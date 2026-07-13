@@ -31,3 +31,7 @@ secrets.env
 # Claude Code local settings — machine-specific, not meant to be shared.
 # .claude/settings.json itself (project-level hooks config) stays tracked.
 .claude/settings.local.json
+
+# Local, private Claude Code project instructions (host infrastructure
+# details the public CLAUDE.md deliberately omits)
+CLAUDE.local.md

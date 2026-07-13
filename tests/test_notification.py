@@ -18,7 +18,7 @@ class TestBuildNotification:
     def test_subject_counts_all_ads(self):
         ads = [make_ad("Vatera", "1", "Cím 1", 1000), make_ad("Moly", "2", "Cím 2", 2000)]
         subject, _ = pm.MultiMarketplaceMonitor.build_notification(ads)
-        assert subject == "Új hirdetések: 2 db"
+        assert subject == "Hirdetések: 2 db"
 
     def test_body_groups_by_site(self):
         ads = [

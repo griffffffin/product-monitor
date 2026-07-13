@@ -41,11 +41,11 @@ pip install -r requirements.txt
 Set the following environment variables (see `.env.example`):
 
 ```
-PRODUCT_MONITOR_SMTP_SERVER=smtp.gmail.com
-PRODUCT_MONITOR_SMTP_PORT=587
-PRODUCT_MONITOR_SENDER_EMAIL=you@example.com
-PRODUCT_MONITOR_SENDER_PASSWORD=your-app-password
-PRODUCT_MONITOR_RECIPIENT_EMAIL=you@example.com
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SENDER_EMAIL=you@example.com
+SENDER_PASSWORD=your-app-password
+RECIPIENT_EMAIL=you@example.com
 ```
 
 Copy `product-monitor-config.example.json` to `product-monitor-config.json` and fill in what you actually want to watch:
