@@ -101,7 +101,7 @@ python3 -m pytest tests/ -v
 
 ### Self-check: catching a silent break
 
-A scraper that breaks doesn't crash — it just quietly returns nothing, forever, which looks exactly like a quiet market. So the running service checks itself: in the first cycle at or after `health_check_hour` (17:00 by default), it hits every site and verifies its scraper still finds listing cards there.
+A scraper that breaks doesn't crash — it just quietly returns nothing, forever, which looks exactly like a quiet market. So the running service checks itself: in the first cycle at or after `health_check_hour` (16:00 by default), it hits every site and verifies its scraper still finds listing cards there.
 
 It emails you **only when something is actually wrong**:
 

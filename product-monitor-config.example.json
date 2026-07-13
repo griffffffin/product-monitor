@@ -31,5 +31,5 @@
   "max_log_size_mb": 100,
 
   "health_check_enabled": true,
-  "health_check_hour": 17
+  "health_check_hour": 16
 }

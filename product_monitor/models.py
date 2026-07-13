@@ -55,7 +55,7 @@ class MonitorConfig:
     # Daily live health check: run the smoke check in the first cycle at or
     # after this hour (local time), email only if a site is actually broken.
     health_check_enabled: bool = True
-    health_check_hour: int = 17
+    health_check_hour: int = 16
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -81,5 +81,5 @@ class MonitorConfig:
             log_level=data.get("log_level", "INFO"),
             max_log_size_mb=data.get("max_log_size_mb", 100),
             health_check_enabled=data.get("health_check_enabled", True),
-            health_check_hour=data.get("health_check_hour", 17),
+            health_check_hour=data.get("health_check_hour", 16),
         )
