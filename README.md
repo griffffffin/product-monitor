@@ -17,6 +17,7 @@ I wanted to know the moment a specific used Xbox Series S, a particular laptop c
 - Detects both **new** listings and **price changes** on listings it's already seen
 - Sends a single, grouped-by-site email per check cycle (every 3 hours by default) via Gmail SMTP
 - Persists seen listings to a local JSON file: batch-written, atomically replaced, with a `/tmp` fallback location if the primary data directory isn't writable
+- Checks its own scrapers once a day against the live sites (see [Self-check](#self-check-catching-a-silent-break)) and emails **only** when one is actually broken
 
 ## What it doesn't do (honest limitations)
 
@@ -96,7 +97,21 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-51 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 4), dedup/cleanup/save-load round-tripping, and email body formatting.
+65 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 4), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic and once-a-day scheduling.
+
+### Self-check: catching a silent break
+
+A scraper that breaks doesn't crash — it just quietly returns nothing, forever, which looks exactly like a quiet market. So the running service checks itself: in the first cycle at or after `health_check_hour` (17:00 by default), it hits every site and verifies its scraper still finds listing cards there.
+
+It emails you **only when something is actually wrong**:
+
+| Result | Means | Email? |
+| --- | --- | --- |
+| Fetch/parse error | The site is unreachable, blocking, or erroring | Yes |
+| 0 raw cards | The page loaded but no listings were found — selectors likely dead | Yes |
+| 0 matches, raw cards fine | Nothing for sale right now — the normal quiet state | **No** |
+
+That last row is the whole point: a zero-results day is not an incident, and getting an email about it every evening would train you to ignore the ones that matter. Configure with `health_check_enabled` / `health_check_hour`, or run the same check by hand at any time:
 
 ### Live smoke check
 
@@ -104,7 +119,9 @@ python3 -m pytest tests/ -v
 python3 scripts/live_smoke_check.py
 ```
 
-Runs all 4 scrapers for real, against the live sites, with no price/term filtering beyond a generic sanity search, and no email/database side effects. Reports a raw-card count and a matched count per site, so a broken selector (raw count drops to 0) is distinguishable from "genuinely nothing in stock right now" (matched count is 0 but raw isn't).
+Runs all 4 scrapers for real, against the live sites, with no price/term filtering beyond a generic sanity search, and no email/database side effects. Reports a raw-card count and a matched count per site, so a broken selector (raw count drops to 0) is distinguishable from "genuinely nothing in stock right now" (matched count is 0 but raw isn't). Exits non-zero on a real failure. This is the same code the daily self-check above runs (`product_monitor/health_check.py`) — a bug in one can't hide a bug in the other.
+
+Note on CI: the weekly scheduled run of this check happens on GitHub's hosted runners, whose IP ranges some of these sites block outright (a red run has already been a false alarm twice, with all 4 sites healthy from a home connection minutes later). Treat a failure there as a prompt to run the check yourself, not as proof of a break. The in-service daily self-check runs from the same network as the real scraper, so it doesn't have this problem — which is precisely why it exists.
 
 This isn't a theoretical safeguard. In July 2026, jofogas.hu was rebuilt on a Next.js/React frontend, and the scraper's DOM selectors (`div.general-item`, `id="listid_*"`) stopped matching anything — silently. No exception, no error log, just permanently zero Jofogas results every cycle, for an unknown length of time. The static-fixture unit tests didn't catch it (the fixtures still matched the *old* structure they were written against); only running the live smoke check against the real site did. The fix — parsing the `__NEXT_DATA__` JSON blob the page now embeds its listing data in, instead of scraping the DOM — is in `product_monitor/scrapers/jofogas.py`; the incident is written up in full in `CLAUDE.md`.
 
@@ -149,11 +166,12 @@ product_monitor/
 │   ├── base.py             — BaseScraper (normalize_text/parse_price/matches_search_terms/create_advertisement, shared by all 4 sites)
 │   ├── hardverapro.py, moly.py, vatera.py, jofogas.py — one file per site, each implements build_search_url() and process_ad_item()/fetch_advertisements()
 │   └── __init__.py          — re-exports all 5 classes
-├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, sleeps until the next cycle
+├── health_check.py         — the live self-check: hits every site, tells a broken scraper apart from an empty market (used by both the daily in-service check and scripts/live_smoke_check.py)
+├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed)
 
-tests/                    — 51 unit tests, no network calls (see Tests above)
-scripts/                  — live_smoke_check.py, the real-network counterpart to the tests
+tests/                    — 65 unit tests, no network calls (see Tests above)
+scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
 ```
 
 ## A note on how this was built

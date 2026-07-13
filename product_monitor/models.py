@@ -52,6 +52,10 @@ class MonitorConfig:
     request_timeout: int = 60
     log_level: str = "INFO"
     max_log_size_mb: int = 100
+    # Daily live health check: run the smoke check in the first cycle at or
+    # after this hour (local time), email only if a site is actually broken.
+    health_check_enabled: bool = True
+    health_check_hour: int = 17
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -74,4 +78,8 @@ class MonitorConfig:
             cleanup_days=data.get("cleanup_days", 60),
             max_concurrent_requests=data.get("max_concurrent_requests", 5),
             request_timeout=data.get("request_timeout", 60),
+            log_level=data.get("log_level", "INFO"),
+            max_log_size_mb=data.get("max_log_size_mb", 100),
+            health_check_enabled=data.get("health_check_enabled", True),
+            health_check_hour=data.get("health_check_hour", 17),
         )

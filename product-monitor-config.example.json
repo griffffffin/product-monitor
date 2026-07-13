@@ -28,5 +28,8 @@
   "max_concurrent_requests": 5,
   "request_timeout": 60,
   "log_level": "INFO",
-  "max_log_size_mb": 100
+  "max_log_size_mb": 100,
+
+  "health_check_enabled": true,
+  "health_check_hour": 17
 }

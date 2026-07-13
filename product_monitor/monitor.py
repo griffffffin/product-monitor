@@ -7,12 +7,13 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Set
 
 import aiofiles
 import aiohttp
 
+from . import health_check
 from .config import LOG_FILE
 from .email_notifier import EmailNotifier
 from .models import Advertisement, MonitorConfig
@@ -35,6 +36,9 @@ class MultiMarketplaceMonitor:
         # Memory monitoring
         self.last_memory_check = time.time()
         self.memory_check_interval = 10800  # 3 hours
+
+        # Daily health check - the date it last ran, so it fires once a day
+        self.last_health_check_date: Optional[date] = None
 
         # Async session
         self.session: Optional[aiohttp.ClientSession] = None
@@ -415,6 +419,52 @@ class MultiMarketplaceMonitor:
         asyncio.create_task(self.email_notifier.send_notification(subject, body))
         logging.info(f"Email küldés {len(ads)} hirdetésről.")
 
+    async def maybe_run_health_check(self):
+        """Once a day, in the first cycle at or after health_check_hour, verify
+        the scrapers still work against the live sites and email ONLY if one is
+        actually broken (fetch error, or 0 raw cards = selector likely dead).
+
+        A site with 0 matches but a healthy raw card count is silent on purpose:
+        "nothing for sale right now" is the normal state, not an incident.
+
+        This exists because a site redesign breaks a scraper *silently* - it
+        just returns no listings forever, which is indistinguishable from a
+        quiet market unless something actually checks the page structure (this
+        is exactly how the Jofogas scraper stayed broken unnoticed, see
+        CLAUDE.md).
+        """
+        if not self.config.health_check_enabled:
+            return
+
+        now = datetime.now()
+        if now.hour < self.config.health_check_hour:
+            return
+        if self.last_health_check_date == now.date():
+            return
+
+        self.last_health_check_date = now.date()
+        logging.info("Napi ellenőrzés indítása...")
+
+        try:
+            results = await health_check.run_health_check(self)
+        except Exception as e:
+            # Never let the health check take the monitoring cycle down with it
+            logging.error(f"Napi ellenőrzés sikertelen: {e}", exc_info=True)
+            return
+
+        logging.info("Napi ellenőrzés eredménye:\n%s", health_check.format_report(results))
+
+        failed = [r for r in results if health_check.is_failure(r)]
+        if not failed:
+            logging.info("Napi ellenőrzés: minden oldal rendben.")
+            return
+
+        sites = ", ".join(r["site"] for r in failed)
+        logging.error(f"Napi ellenőrzés: hibás oldal(ak): {sites}.")
+        subject, body = health_check.build_health_alert(results)
+        asyncio.create_task(self.email_notifier.send_notification(subject, body))
+        logging.info(f"Email küldés {len(failed)} hibás oldalról.")
+
     async def run(self):
         """Async continuous monitoring"""
         logging.info("Product Monitor indítása...")
@@ -451,6 +501,8 @@ class MultiMarketplaceMonitor:
                         self.send_notification(new_ads)
                     else:
                         logging.info("Nincs új hirdetés.")
+
+                    await self.maybe_run_health_check()
 
                     logging.info("Sikeres ciklus.")
                     logging.info(f"Várakozás {self.config.check_interval / 3600:.0f} órát...")
