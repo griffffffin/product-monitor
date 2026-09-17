@@ -1,9 +1,13 @@
 name: Live smoke check
 
+# NOTE: no `schedule:` trigger. GitHub-hosted runner IPs are blocked/rate-limited
+# by the target sites' anti-bot layers (rotating 403/503/empty responses that do
+# NOT reproduce from a real network), so a scheduled run false-fails almost every
+# week and carries no real signal. The trustworthy safeguard is the daily
+# in-service health check, which runs from the Pi's own IP and emails only on
+# genuine breaks. This workflow is kept for on-demand manual runs only.
 on:
-  schedule:
-    - cron: "0 8 * * 1" # every Monday at 08:00 UTC
-  workflow_dispatch: # allow manual runs from the Actions tab too
+  workflow_dispatch: # manual runs from the Actions tab
 
 jobs:
   live-check:
