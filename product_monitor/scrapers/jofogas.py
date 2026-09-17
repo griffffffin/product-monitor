@@ -32,9 +32,13 @@ class JofogasScraper(BaseScraper):
                 return None
             if not self.matches_search_terms(title, search_config.search_terms):
                 return None
+            if self.is_excluded(title, search_config.exclude_terms):
+                return None
 
             price = (item.get("price") or {}).get("value")
-            if not isinstance(price, (int, float)) or price <= 0 or price > search_config.max_price:
+            if not isinstance(price, (int, float)) or not self.price_in_range(
+                int(price), search_config.max_price, search_config.min_price
+            ):
                 return None
 
             url = item.get("url")

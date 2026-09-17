@@ -25,7 +25,7 @@ class MolyScraper(BaseScraper):
                 return None
 
             price = self.parse_price(price_text)
-            if price <= 0 or price > search_config.max_price:
+            if not self.price_in_range(price, search_config.max_price, search_config.min_price):
                 return None
 
             book_link = item.find("a", class_="book_selector")
@@ -33,6 +33,8 @@ class MolyScraper(BaseScraper):
                 return None
 
             title = book_link.text.strip()
+            if self.is_excluded(title, search_config.exclude_terms):
+                return None
 
             example_link = item.find("a", class_="button_icon")
             url = (

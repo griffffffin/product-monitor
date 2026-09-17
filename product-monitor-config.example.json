@@ -4,6 +4,8 @@
       "site": "HardverApro",
       "search_terms": ["example", "product"],
       "max_price": 50000,
+      "min_price": 5000,
+      "exclude_terms": ["hibás", "alkatrésznek"],
       "url": "https://hardverapro.hu/aprok/keres.php?stext=example"
     },
     {

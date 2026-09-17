@@ -62,6 +62,28 @@ class BaseScraper:
 
         return all(term in title_normalized for term in normalized_terms)
 
+    def is_excluded(self, title: str, exclude_terms: List[str]) -> bool:
+        """True if the title contains any exclude term as a substring.
+
+        Uses the same normalization as matches_search_terms (diacritic- and
+        case-insensitive). No exclude terms -> never excludes.
+        """
+        if not exclude_terms:
+            return False
+
+        title_normalized = self.normalize_text(title)
+        return any(self.normalize_text(term) in title_normalized for term in exclude_terms if term)
+
+    def price_in_range(self, price: int, max_price: int, min_price: Optional[int] = None) -> bool:
+        """Price must be positive, at most max_price, and - if a lower bound is
+        set - at least min_price. min_price=None means no lower bound.
+        """
+        if price <= 0 or price > max_price:
+            return False
+        if min_price is not None and price < min_price:
+            return False
+        return True
+
     def create_advertisement(
         self, ad_id: str, title: str, price: int, url: str, site: str, search_id: str
     ) -> Advertisement:

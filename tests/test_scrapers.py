@@ -59,6 +59,30 @@ class TestHardverApro:
         cfg = pm.SearchConfig(site="HardverApro", search_terms=["playstation"], max_price=60000)
         assert self.scraper.process_ad_item(self.item(), cfg) is None
 
+    def test_min_price_filters_out_cheap_false_match(self):
+        # Searching for an "n305" (Alder Lake-N) CPU also substring-matches a
+        # cheap old "N3050" Celeron listing; a lower price bound rules it out
+        # while a genuine n305 board (well above the floor) still passes.
+        item = self.item(title="Intel Celeron N3050 mini PC", price="8 000 Ft")
+        no_floor = pm.SearchConfig(site="HardverApro", search_terms=["n305"], max_price=200000)
+        assert self.scraper.process_ad_item(item, no_floor) is not None
+        with_floor = pm.SearchConfig(
+            site="HardverApro", search_terms=["n305"], max_price=200000, min_price=30000
+        )
+        assert self.scraper.process_ad_item(item, with_floor) is None
+
+    def test_exclude_terms_drops_155hz_monitor(self):
+        # Searching "155h" (a laptop CPU suffix) substring-matches a "155Hz"
+        # monitor; excluding "hz" drops the monitor. Without the exclusion the
+        # same listing passes, proving the exclusion is what filters it.
+        item = self.item(title="LG UltraGear 155Hz Gaming Monitor", price="90 000 Ft")
+        no_exclude = pm.SearchConfig(site="HardverApro", search_terms=["155h"], max_price=200000)
+        assert self.scraper.process_ad_item(item, no_exclude) is not None
+        excluded = pm.SearchConfig(
+            site="HardverApro", search_terms=["155h"], max_price=200000, exclude_terms=["hz"]
+        )
+        assert self.scraper.process_ad_item(item, excluded) is None
+
     def test_build_search_url_prefers_explicit_url(self):
         cfg = pm.SearchConfig(
             site="HardverApro", search_terms=["x"], max_price=1000, url="https://example.com/fixed"
@@ -134,6 +158,19 @@ class TestMoly:
         """)
         assert self.scraper.process_ad_item(frag, self.default_cfg()) is None
 
+    def test_exclude_terms_apply_even_without_search_terms(self):
+        # Moly matches by book URL, not search_terms, but exclude_terms still
+        # filters on the (book) title - here a "díszkiadás" the user wants to skip.
+        cfg = pm.SearchConfig(
+            site="Moly",
+            search_terms=[],
+            max_price=10000,
+            url="https://moly.hu/konyvek/teszt/elado-peldanyok",
+            exclude_terms=["diszkiadas"],
+        )
+        assert self.scraper.process_ad_item(self.item(title="1984 díszkiadás"), cfg) is None
+        assert self.scraper.process_ad_item(self.item(title="1984 puhafedeles"), cfg) is not None
+
 
 class TestVatera:
     scraper = pm.VateraScraper(None)
@@ -176,6 +213,19 @@ class TestVatera:
             </div>
         """)
         assert self.scraper.process_ad_item(frag, cfg) is None
+
+    def test_exclude_terms_drops_dock_false_match(self):
+        # "mac"+"mini"+"m1" as AND-ed terms also match a docking-station
+        # listing; excluding "dokkolo" drops it. Diacritic-insensitive, so the
+        # accented "dokkoló" in the title is caught by the unaccented term.
+        item = self.item(product_id="99", title="USB-C dokkoló Mac mini M1-hez", price="12 000 Ft")
+        terms = ["mac", "mini", "m1"]
+        no_exclude = pm.SearchConfig(site="Vatera", search_terms=terms, max_price=300000)
+        assert self.scraper.process_ad_item(item, no_exclude) is not None
+        excluded = pm.SearchConfig(
+            site="Vatera", search_terms=terms, max_price=300000, exclude_terms=["dokkolo"]
+        )
+        assert self.scraper.process_ad_item(item, excluded) is None
 
     def test_build_search_url(self):
         cfg = pm.SearchConfig(site="Vatera", search_terms=["orwell", "1984"], max_price=15000)
@@ -227,6 +277,13 @@ class TestJofogas:
     def test_search_term_mismatch_returns_none(self):
         cfg = pm.SearchConfig(site="Jofogas", search_terms=["xbox"], max_price=15000)
         assert self.scraper.process_ad_item(self.item(), cfg) is None
+
+    def test_min_price_filters_below_floor(self):
+        cfg = pm.SearchConfig(
+            site="Jofogas", search_terms=["orwell"], max_price=15000, min_price=5000
+        )
+        assert self.scraper.process_ad_item(self.item(price=3000), cfg) is None
+        assert self.scraper.process_ad_item(self.item(price=8500), cfg) is not None
 
     def test_build_search_url(self):
         cfg = pm.SearchConfig(site="Jofogas", search_terms=["orwell", "1984"], max_price=15000)

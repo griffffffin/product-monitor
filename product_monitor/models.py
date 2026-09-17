@@ -1,5 +1,5 @@
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 from .config import EMAIL_CONFIG
@@ -13,10 +13,22 @@ class SearchConfig:
     search_terms: List[str]
     max_price: int
     url: Optional[str] = None
+    # Optional lower price bound (the max_price counterpart); None = no lower bound.
+    min_price: Optional[int] = None
+    # Optional exclusion terms: a listing whose title contains any of these
+    # (substring, same normalization as search_terms) is dropped. Empty = never excludes.
+    exclude_terms: List[str] = field(default_factory=list)
     _search_id: Optional[str] = None
 
     def get_search_id(self) -> str:
-        """Generate a unique identifier for the search (cached)"""
+        """Generate a unique identifier for the search (cached)
+
+        Deliberately keyed only on site/url/terms/max_price, NOT on the newer
+        min_price/exclude_terms fields: the search_id groups already-seen ads in
+        seen-products.json, so changing what it hashes would orphan existing
+        entries and re-notify everything. min_price/exclude_terms only tighten
+        which listings pass the filter, so a stable id is the safe choice.
+        """
         if self._search_id is None:
             search_str = f"{self.site}_{self.url if self.site == 'Moly' else '+'.join(self.search_terms)}_{self.max_price}"
             self._search_id = hashlib.md5(search_str.encode()).hexdigest()[:8]
@@ -66,6 +78,8 @@ class MonitorConfig:
                     "search_terms": s.get("search_terms", []),
                     "max_price": s["max_price"],
                     "url": s.get("url"),
+                    "min_price": s.get("min_price"),
+                    "exclude_terms": s.get("exclude_terms", []),
                 }
             )
             for s in data["searches"]

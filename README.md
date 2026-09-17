@@ -13,7 +13,7 @@ I wanted to know the moment a specific used Xbox Series S, a particular laptop c
 ## What it does
 
 - Scrapes 4 independent Hungarian marketplace sites — HardverApro, Vatera, Jófogás, and Moly (a books-specific marketplace) — each with its own page structure behind one common interface
-- Filters by a per-search price ceiling and (optionally) search terms
+- Filters by a per-search price ceiling and, optionally, search terms, a lower price bound (`min_price`), and exclusion terms (`exclude_terms`) that drop unwanted false matches
 - Detects both **new** listings and **price changes** on listings it's already seen
 - Sends a single, grouped-by-site email per check cycle (every 3 hours by default) via Gmail SMTP
 - Persists seen listings to a local JSON file: batch-written, atomically replaced, with a `/tmp` fallback location if the primary data directory isn't writable
@@ -60,6 +60,21 @@ Copy `product-monitor-config.example.json` to `product-monitor-config.json` and 
   "cleanup_days": 60
 }
 ```
+
+Each entry in `searches` supports these fields:
+
+| field | required | meaning |
+|-------|----------|---------|
+| `site` | yes | one of `HardverApro`, `Vatera`, `Jofogas`, `Moly` |
+| `search_terms` | yes* | all terms must appear in the title (substring, diacritic-/case-insensitive). Moly ignores it and matches by `url` instead |
+| `max_price` | yes | upper price bound, in Ft |
+| `min_price` | no | lower price bound, in Ft — useful when a cheap unrelated item substring-matches the term (e.g. searching `"n305"` also hits a cheap `"N3050"` Celeron) |
+| `exclude_terms` | no | drop any listing whose title contains one of these (substring, same normalization as `search_terms`) — e.g. `["hz"]` to keep a `"155h"` CPU search from matching a `"155Hz"` monitor |
+| `url` | no** | override the generated search URL |
+
+\* Moly needs `url`, not `search_terms`. \*\* Moly requires `url`; the others generate one from `search_terms`/`max_price` if omitted.
+
+`min_price` and `exclude_terms` are both optional and default to "no lower bound" / "exclude nothing". They only tighten which listings pass the filter, so adding them to an existing search doesn't re-notify or lose already-seen listings.
 
 Then:
 

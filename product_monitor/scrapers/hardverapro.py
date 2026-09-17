@@ -29,6 +29,8 @@ class HardverAproScraper(BaseScraper):
             title = title_link.get_text(strip=True)
             if not self.matches_search_terms(title, search_config.search_terms):
                 return None
+            if self.is_excluded(title, search_config.exclude_terms):
+                return None
 
             price_element = item.find("div", class_="uad-price")
             price_span = price_element.find("span", class_="text-nowrap") if price_element else None
@@ -36,7 +38,7 @@ class HardverAproScraper(BaseScraper):
                 return None
 
             price = self.parse_price(price_span.get_text(strip=True))
-            if price <= 0 or price > search_config.max_price:
+            if not self.price_in_range(price, search_config.max_price, search_config.min_price):
                 return None
 
             url = urljoin("https://hardverapro.hu", title_link.get("href"))

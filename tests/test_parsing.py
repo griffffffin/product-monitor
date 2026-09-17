@@ -73,6 +73,49 @@ class TestMatchesSearchTerms:
         )
 
 
+class TestIsExcluded:
+    def test_no_exclude_terms_never_excludes(self):
+        assert make_scraper().is_excluded("Bármi cím", []) is False
+
+    def test_any_matching_term_excludes(self):
+        scraper = make_scraper()
+        # a single matching exclude term is enough (OR, unlike search_terms' AND)
+        assert scraper.is_excluded("LG 27GL850 155Hz monitor", ["hz"]) is True
+        assert scraper.is_excluded("Intel N305 mini PC", ["hz"]) is False
+
+    def test_substring_match_like_search_terms(self):
+        # is_excluded is substring-based, same as matches_search_terms - "155hz"
+        # occurs inside "155Hz monitor", so this listing is excluded.
+        assert make_scraper().is_excluded("Monitor 155Hz IPS", ["155hz"]) is True
+
+    def test_diacritic_and_case_insensitive(self):
+        # "dokkoló" in the title, "dokkolo" (no accent, lowercase) as the term
+        assert make_scraper().is_excluded("USB-C dokkoló Mac mini M1-hez", ["dokkolo"]) is True
+
+
+class TestPriceInRange:
+    def test_zero_or_negative_never_in_range(self):
+        assert make_scraper().price_in_range(0, 10000) is False
+        assert make_scraper().price_in_range(-5, 10000) is False
+
+    def test_above_max_is_out(self):
+        assert make_scraper().price_in_range(10001, 10000) is False
+
+    def test_within_max_and_no_lower_bound(self):
+        assert make_scraper().price_in_range(5000, 10000) is True
+
+    def test_below_min_is_out(self):
+        assert make_scraper().price_in_range(4999, 100000, min_price=5000) is False
+
+    def test_at_or_above_min_is_in(self):
+        scraper = make_scraper()
+        assert scraper.price_in_range(5000, 100000, min_price=5000) is True
+        assert scraper.price_in_range(50000, 100000, min_price=5000) is True
+
+    def test_min_none_means_no_lower_bound(self):
+        assert make_scraper().price_in_range(1, 10000, min_price=None) is True
+
+
 class TestGetSearchId:
     def test_deterministic(self):
         cfg1 = pm.SearchConfig(site="Vatera", search_terms=["orwell"], max_price=10000)
@@ -83,6 +126,19 @@ class TestGetSearchId:
         cfg1 = pm.SearchConfig(site="Vatera", search_terms=["orwell"], max_price=10000)
         cfg2 = pm.SearchConfig(site="Vatera", search_terms=["beta"], max_price=10000)
         assert cfg1.get_search_id() != cfg2.get_search_id()
+
+    def test_min_price_and_exclude_terms_do_not_change_id(self):
+        # search_id keys the seen-ads DB; adding a lower bound or exclusion
+        # terms must not orphan existing entries, so the id stays stable.
+        base = pm.SearchConfig(site="Vatera", search_terms=["orwell"], max_price=10000)
+        tightened = pm.SearchConfig(
+            site="Vatera",
+            search_terms=["orwell"],
+            max_price=10000,
+            min_price=2000,
+            exclude_terms=["reprint"],
+        )
+        assert base.get_search_id() == tightened.get_search_id()
 
     def test_moly_uses_url_not_terms(self):
         cfg = pm.SearchConfig(

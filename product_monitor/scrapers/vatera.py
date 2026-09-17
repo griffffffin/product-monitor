@@ -26,13 +26,15 @@ class VateraScraper(BaseScraper):
             title = title_element.text.strip()
             if not self.matches_search_terms(title, search_config.search_terms):
                 return None
+            if self.is_excluded(title, search_config.exclude_terms):
+                return None
 
             price_element = item.find("span", class_="originalVal")
             if not price_element:
                 return None
 
             price = self.parse_price(price_element.text.strip())
-            if price <= 0 or price > search_config.max_price:
+            if not self.price_in_range(price, search_config.max_price, search_config.min_price):
                 return None
 
             url = title_link.get("href")
