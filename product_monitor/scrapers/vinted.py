@@ -25,6 +25,8 @@ rather than silently letting the filter rot (see health_check.py).
 """
 
 import asyncio
+import base64
+import json
 import random
 import re
 import time
@@ -79,6 +81,21 @@ _SELLER_CACHE_TTL_SECONDS = 7 * 24 * 3600
 _SELLER_FETCH_MIN_INTERVAL = 1.5
 _SELLER_FETCH_JITTER = 1.0
 
+# The anonymous access_token_web is a JWT valid for 24h, but Vinted sets its
+# cookie with a 7-day Max-Age, so the cookie outlives the token by days. Once the
+# token has expired the catalog still answers 200 - with ZERO item cards - and a
+# plain homepage GET does not fix it: while the 90-day refresh_token_web cookie is
+# in the jar the server issues no new access token (it leaves refreshing to the
+# browser's JS). Verified live 2026-10-20; in production this made Vinted go
+# silent exactly ~24h after every service start, until the next restart. So we
+# read the token's own `exp` and, when it's (nearly) up, wipe every Vinted cookie
+# and prime from scratch - the same clean jar a restart gives.
+_TOKEN_REFRESH_MARGIN_SECONDS = 3600
+# A forced re-prime (after a 0-card page) is skipped if we primed this recently:
+# a token that fresh can't be the problem, and it stops several concurrent
+# searches from each wiping the jar in turn.
+_MIN_REPRIME_INTERVAL_SECONDS = 60
+
 # Parse only <a> tags out of the ~7 MB page - never the whole DOM tree.
 _ONLY_ANCHORS = SoupStrainer("a")
 
@@ -94,6 +111,18 @@ _BRAND_TAIL_RE = re.compile(r",\s*Márka:.*$")
 # plain-JSON form matches too.
 _SELLER_REP_RE = re.compile(r'feedback_reputation\\?":\s*([0-9.]+)')
 _SELLER_CNT_RE = re.compile(r'feedback_count\\?":\s*([0-9]+)')
+
+
+def access_token_expiry(token: str) -> Optional[float]:
+    """The `exp` claim (epoch seconds) of a JWT, read without verifying the
+    signature (we only need to know when to re-prime), or None if `token` isn't
+    a decodable JWT."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
+    except Exception:
+        return None
 
 
 def extract_seller_feedback(item_html: str):
@@ -175,6 +204,7 @@ class VintedScraper(BaseScraper):
         # Guards the one-time (and re-priming) homepage cookie fetch so
         # concurrent searches don't all hammer the homepage at once.
         self._prime_lock = asyncio.Lock()
+        self._primed_at: Optional[float] = None  # monotonic time of the last prime
         # Seller-trust cache (item_id -> (trusted, monotonic ts)).
         self._seller_cache: Dict[str, Tuple[bool, float]] = {}
         # Serialises + paces item-page fetches across concurrent searches.
@@ -204,20 +234,46 @@ class VintedScraper(BaseScraper):
             headers["Referer"] = referer
         return headers
 
-    def _has_anon_cookie(self) -> bool:
+    def _has_valid_token(self) -> bool:
+        """True if the jar holds an access token good for at least the refresh
+        margin. A token whose expiry can't be read counts as valid - the 0-card
+        fallback in fetch_advertisements still catches it if it's stale."""
         try:
-            return any(c.key == "access_token_web" for c in self.session.cookie_jar)
+            for c in self.session.cookie_jar:
+                if c.key != "access_token_web":
+                    continue
+                exp = access_token_expiry(c.value)
+                if exp is None or exp - time.time() > _TOKEN_REFRESH_MARGIN_SECONDS:
+                    return True
         except Exception:
-            return False
+            pass
+        return False
 
-    async def prepare(self, force: bool = False) -> None:
-        """Obtain the anonymous session cookie DataDome requires. A plain GET of
-        the homepage sets it; it then rides on the shared session's cookie jar
-        for every catalog request. Re-primes when the cookie is missing/expired
-        (force=True, or the jar has none) - so this survives long uptimes."""
+    async def prepare(self) -> None:
+        """Make sure the session holds a usable anonymous access token."""
+        await self._prime()
+
+    async def _prime(self, force: bool = False) -> bool:
+        """Obtain the anonymous session cookies DataDome requires. A plain GET of
+        the homepage sets them; they then ride on the shared session's cookie jar
+        for every catalog request. Re-primes when the access token is missing or
+        about to expire, or on force=True (a 0-card page) unless we only just
+        primed. Returns whether it re-primed."""
         async with self._prime_lock:
-            if not force and self._has_anon_cookie():
-                return
+            if force:
+                if (
+                    self._primed_at is not None
+                    and time.monotonic() - self._primed_at < _MIN_REPRIME_INTERVAL_SECONDS
+                ):
+                    return False
+            elif self._has_valid_token():
+                return False
+            # Start from an empty Vinted jar: a leftover refresh_token_web stops
+            # the homepage from issuing a new access token (see the constants).
+            try:
+                self.session.cookie_jar.clear_domain("vinted.hu")
+            except Exception as e:
+                self.logger.debug(f"Vinted cookie-törlés sikertelen: {e}")
             try:
                 async with self.session.get(
                     BASE_URL, timeout=30, headers=self._nav_headers()
@@ -225,6 +281,8 @@ class VintedScraper(BaseScraper):
                     await response.read()
             except Exception as e:
                 self.logger.debug(f"Vinted cookie-priming sikertelen: {e}")
+            self._primed_at = time.monotonic()
+            return True
 
     def process_ad_item(self, item, search_config: SearchConfig) -> Optional[Advertisement]:
         """`item` is a single item-card <a> element (bs4 Tag) with href + title."""
@@ -295,13 +353,14 @@ class VintedScraper(BaseScraper):
             html = await self._get_html(url, referer=BASE_URL)
             anchors = _item_anchors(html)
 
-            # No cards at all is likely a stale/missing cookie (a genuine
-            # no-results search still returns the site's loose grid) - re-prime
-            # once and retry before giving up.
-            if not anchors:
-                await self.prepare(force=True)
+            # No cards at all means a bad session, never a real result (even a
+            # nonsense search returns the site's loose grid) - re-prime from a
+            # clean jar once and retry before giving up.
+            if not anchors and await self._prime(force=True):
                 html = await self._get_html(url, referer=BASE_URL)
                 anchors = _item_anchors(html)
+            if not anchors:
+                self.logger.warning("Vinted: a találati oldal 0 hirdetéskártyát adott.")
 
             # Cheap filters first (title/terms/price/condition), off the catalog
             # card alone - no extra requests.

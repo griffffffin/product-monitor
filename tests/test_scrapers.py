@@ -5,6 +5,9 @@ touches self.session.
 """
 
 import asyncio
+import base64
+import json
+import time
 import types
 
 from bs4 import BeautifulSoup
@@ -37,20 +40,59 @@ class _FakeResponse:
         return b""
 
 
+def _jwt(exp):
+    """An unsigned JWT-shaped token carrying just an `exp` claim."""
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=")
+    return f"header.{payload.decode()}.signature"
+
+
+def _cookie(key, value="x"):
+    return types.SimpleNamespace(key=key, value=value)
+
+
+class _FakeJar:
+    def __init__(self, cookies):
+        self.cookies = list(cookies)
+        self.cleared = 0
+
+    def __iter__(self):
+        return iter(self.cookies)
+
+    def clear_domain(self, domain):
+        self.cookies = []
+        self.cleared += 1
+
+
 class _FakeSession:
     """Minimal aiohttp-session stand-in for network-free async tests: serves
     canned pages by URL and records every GET. Injected via the constructor -
-    no monkeypatching (the suite deliberately avoids it)."""
+    no monkeypatching (the suite deliberately avoids it).
 
-    def __init__(self, pages):
+    A page may be a callable taking the session, so it can depend on the jar.
+    A homepage GET mimics Vinted's priming: on a clean jar it issues a fresh
+    access + refresh token, but with a refresh token already present it issues
+    nothing (the real behaviour behind the 2026-10 outage)."""
+
+    def __init__(self, pages, token_exp=None):
         self.pages = pages
         self.get_calls = []
-        # prepare() checks the jar for this cookie; present -> it won't fetch.
-        self.cookie_jar = [types.SimpleNamespace(key="access_token_web")]
+        # A day-valid token by default -> prepare() won't fetch.
+        exp = time.time() + 86400 if token_exp is None else token_exp
+        self.cookie_jar = _FakeJar(
+            [_cookie("access_token_web", _jwt(exp)), _cookie("refresh_token_web")]
+        )
 
     def get(self, url, timeout=None, headers=None):
         self.get_calls.append(url)
-        return _FakeResponse(self.pages.get(url, ""))
+        if url == vinted.BASE_URL and not any(
+            c.key == "refresh_token_web" for c in self.cookie_jar
+        ):
+            self.cookie_jar.cookies += [
+                _cookie("access_token_web", _jwt(time.time() + 86400)),
+                _cookie("refresh_token_web"),
+            ]
+        page = self.pages.get(url, "")
+        return _FakeResponse(page(self) if callable(page) else page)
 
 
 class TestHardverApro:
@@ -575,3 +617,114 @@ class TestVintedRequestDiscipline:
         s, _ = self._scraper(pages)
         ads = asyncio.run(s.fetch_advertisements(self._cfg()))
         assert ads == []
+
+
+class TestVintedSession:
+    """Session/token handling - the 2026-10 outage: the 24h access token outlived
+    by its 7-day cookie made every catalog page come back with 0 cards ~24h after
+    each service start, and a plain homepage re-GET couldn't fix it while the
+    refresh token was still in the jar. _FakeSession reproduces that server
+    behaviour (no new token while a refresh token is present)."""
+
+    CATALOG = "https://www.vinted.hu/catalog?search_text=orwell&order=newest_first"
+    ITEM = "https://www.vinted.hu/items/111-orwell-1984"
+    CARD = '<a href="/items/111-orwell-1984" title="Orwell 1984, Állapot: Kiváló, 1000.00 Ft, 1150.00 Ft">x</a>'
+    TRUSTED_SELLER = 'x\\"feedback_count\\":10,\\"feedback_reputation\\":1x'
+
+    def _scraper(self, pages, token_exp=None):
+        session = _FakeSession(pages, token_exp=token_exp)
+        s = pm.VintedScraper(session)
+        s._fetch_min_interval = 0
+        s._fetch_jitter = 0
+        return s, session
+
+    def _cfg(self):
+        return pm.SearchConfig(site="Vinted", search_terms=["orwell"], max_price=5000)
+
+    @staticmethod
+    def _cards_if_fresh(card):
+        """A catalog page that only renders cards for a still-valid token."""
+
+        def page(session):
+            fresh = any(
+                c.key == "access_token_web"
+                and (vinted.access_token_expiry(c.value) or 0) > time.time()
+                for c in session.cookie_jar
+            )
+            return card if fresh else ""
+
+        return page
+
+    def test_access_token_expiry(self):
+        assert vinted.access_token_expiry(_jwt(1792601339)) == 1792601339
+        assert vinted.access_token_expiry("not-a-jwt") is None
+        assert vinted.access_token_expiry("a.!!!.c") is None
+
+    def test_valid_token_does_not_prime(self):
+        s, session = self._scraper({})
+        asyncio.run(s.prepare())
+        assert session.get_calls == []
+
+    def test_expired_token_reprimes_from_clean_jar(self):
+        s, session = self._scraper({}, token_exp=time.time() - 3600)
+        asyncio.run(s.prepare())
+        assert session.get_calls == [vinted.BASE_URL]
+        # The jar was wiped first - otherwise the leftover refresh token would
+        # have stopped the homepage from issuing a new access token.
+        assert session.cookie_jar.cleared == 1
+        assert s._has_valid_token()
+
+    def test_token_expiring_within_margin_reprimes(self):
+        s, session = self._scraper({}, token_exp=time.time() + 600)
+        asyncio.run(s.prepare())
+        assert session.get_calls == [vinted.BASE_URL]
+
+    def test_missing_token_reprimes(self):
+        s, session = self._scraper({})
+        session.cookie_jar.cookies = [_cookie("refresh_token_web")]
+        asyncio.run(s.prepare())
+        assert session.get_calls == [vinted.BASE_URL]
+        assert s._has_valid_token()
+
+    def test_undecodable_token_counts_as_valid(self):
+        s, session = self._scraper({})
+        session.cookie_jar.cookies = [_cookie("access_token_web", "opaque")]
+        asyncio.run(s.prepare())
+        assert session.get_calls == []
+
+    def test_stale_session_recovers_without_restart(self):
+        # The production scenario: token expired, refresh token still in the jar.
+        pages = {self.CATALOG: self._cards_if_fresh(self.CARD), self.ITEM: self.TRUSTED_SELLER}
+        s, session = self._scraper(pages, token_exp=time.time() - 3600)
+        ads = asyncio.run(s.fetch_advertisements(self._cfg()))
+        assert [a.id for a in ads] == ["Vinted_111"]
+        # Re-primed up front, so no wasted 0-card catalog request.
+        assert session.get_calls.count(vinted.BASE_URL) == 1
+        assert session.get_calls.count(self.CATALOG) == 1
+
+    def test_zero_cards_forces_clean_reprime_and_retry(self):
+        # The token looks fine to us (expiry unreadable) but the server returns
+        # 0 cards until the jar is wiped and re-primed.
+        def catalog(session):
+            return self.CARD if session.cookie_jar.cleared else ""
+
+        pages = {self.CATALOG: catalog, self.ITEM: self.TRUSTED_SELLER}
+        s, session = self._scraper(pages)
+        session.cookie_jar.cookies = [
+            _cookie("access_token_web", "opaque"),
+            _cookie("refresh_token_web"),
+        ]
+        ads = asyncio.run(s.fetch_advertisements(self._cfg()))
+        assert [a.id for a in ads] == ["Vinted_111"]
+        assert session.get_calls.count(vinted.BASE_URL) == 1
+        assert session.get_calls.count(self.CATALOG) == 2
+
+    def test_forced_reprime_not_repeated_right_after_one(self):
+        # Two searches that both get 0 cards: only the first wipes + re-primes
+        # (and retries); the second, seconds later, doesn't thrash the jar.
+        s, session = self._scraper({self.CATALOG: ""})
+        asyncio.run(s.fetch_advertisements(self._cfg()))
+        asyncio.run(s.fetch_advertisements(self._cfg()))
+        assert session.get_calls.count(vinted.BASE_URL) == 1
+        assert session.cookie_jar.cleared == 1
+        assert session.get_calls.count(self.CATALOG) == 3

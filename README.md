@@ -115,7 +115,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-119 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary and seller-gate/cache helpers), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling.
+128 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling.
 
 ### Self-check: catching a silent break
 
@@ -190,7 +190,7 @@ product_monitor/
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed)
 
-tests/                    — 119 unit tests, no network calls (see Tests above)
+tests/                    — 128 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
 ```
 
