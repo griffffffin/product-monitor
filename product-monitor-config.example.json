@@ -22,6 +22,11 @@
       "site": "Moly",
       "max_price": 10000,
       "url": "https://moly.hu/konyvek/example-book/elado-peldanyok"
+    },
+    {
+      "site": "Vinted",
+      "search_terms": ["example", "book"],
+      "max_price": 10000
     }
   ],
 

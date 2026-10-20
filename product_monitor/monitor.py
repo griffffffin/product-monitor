@@ -17,7 +17,14 @@ from . import health_check
 from .config import LOG_FILE
 from .email_notifier import EmailNotifier
 from .models import Advertisement, MonitorConfig
-from .scrapers import BaseScraper, HardverAproScraper, JofogasScraper, MolyScraper, VateraScraper
+from .scrapers import (
+    BaseScraper,
+    HardverAproScraper,
+    JofogasScraper,
+    MolyScraper,
+    VateraScraper,
+    VintedScraper,
+)
 
 
 class MultiMarketplaceMonitor:
@@ -269,6 +276,7 @@ class MultiMarketplaceMonitor:
             "Jofogas": JofogasScraper(self.session),
             "Vatera": VateraScraper(self.session),
             "Moly": MolyScraper(self.session),
+            "Vinted": VintedScraper(self.session),
         }
 
     async def check_new_advertisements(self) -> List[Advertisement]:

@@ -120,6 +120,11 @@ class BaseScraper:
         except (AttributeError, TypeError):
             return default
 
+    async def prepare(self) -> None:
+        """Hook for scrapers that must set up session state before fetching
+        (e.g. Vinted priming its DataDome cookie). Default: no-op."""
+        return None
+
     async def fetch_advertisements(self, search_config: SearchConfig) -> List[Advertisement]:
         """Async fetch of listings"""
         raise NotImplementedError

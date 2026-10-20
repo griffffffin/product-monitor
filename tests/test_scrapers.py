@@ -4,13 +4,53 @@ process_ad_item() takes an already-parsed BeautifulSoup element, it never
 touches self.session.
 """
 
+import asyncio
+import types
+
 from bs4 import BeautifulSoup
 
 import product_monitor as pm
+from product_monitor.scrapers import vinted
 
 
 def soup_fragment(html: str):
     return BeautifulSoup(html, "html.parser").find(True)
+
+
+class _FakeResponse:
+    def __init__(self, text):
+        self._text = text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def text(self, encoding=None):
+        return self._text
+
+    async def read(self):
+        return b""
+
+
+class _FakeSession:
+    """Minimal aiohttp-session stand-in for network-free async tests: serves
+    canned pages by URL and records every GET. Injected via the constructor -
+    no monkeypatching (the suite deliberately avoids it)."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.get_calls = []
+        # prepare() checks the jar for this cookie; present -> it won't fetch.
+        self.cookie_jar = [types.SimpleNamespace(key="access_token_web")]
+
+    def get(self, url, timeout=None, headers=None):
+        self.get_calls.append(url)
+        return _FakeResponse(self.pages.get(url, ""))
 
 
 class TestHardverApro:
@@ -291,3 +331,247 @@ class TestJofogas:
             self.scraper.build_search_url(cfg)
             == "https://www.jofogas.hu/magyarorszag?q=orwell+1984"
         )
+
+
+class TestVinted:
+    """Vinted (books only). process_ad_item() takes a single item-card <a>
+    element whose `title` attribute holds all the data, comma-structured:
+        "{title}[, Márka: X], Állapot: {condition}[, Méret: Y], {price} Ft, {total} Ft"
+    The price stored is the buyer-protection TOTAL (the last "... Ft"), and the
+    accepted condition set is hardcoded (top-3 tiers), like Moly's 5 stars.
+    """
+
+    scraper = pm.VintedScraper(None)
+
+    def item(
+        self,
+        item_id="9274645524",
+        condition="Kiváló",
+        price="35000.00",
+        total="37030.00",
+        title="George Orwell: 1984",
+        href=None,
+    ):
+        href = href or f"/items/{item_id}-george-orwell-1984"
+        title_attr = f"{title}, Állapot: {condition}, {price} Ft, {total} Ft"
+        return soup_fragment(f'<a href="{href}" title="{title_attr}">x</a>')
+
+    def default_cfg(self, **kw):
+        kw.setdefault("site", "Vinted")
+        kw.setdefault("search_terms", ["orwell", "1984"])
+        kw.setdefault("max_price", 40000)
+        return pm.SearchConfig(**kw)
+
+    def test_happy_path(self):
+        ad = self.scraper.process_ad_item(self.item(), self.default_cfg())
+        assert ad is not None
+        assert ad.id == "Vinted_9274645524"
+        assert ad.title == "George Orwell: 1984"
+        assert ad.url == "https://www.vinted.hu/items/9274645524-george-orwell-1984"
+        assert ad.site == "Vinted"
+
+    def test_price_is_the_buyer_protection_total(self):
+        # Stored price is the total (37030), NOT the listing price (35000).
+        ad = self.scraper.process_ad_item(self.item(), self.default_cfg())
+        assert ad.price == 37030
+
+    def test_max_price_filters_on_total_not_listing(self):
+        # 35000 listing / 37030 total: a budget between the two must reject it,
+        # proving the gate is on the total the user actually pays.
+        cfg = self.default_cfg(max_price=36000)
+        assert self.scraper.process_ad_item(self.item(), cfg) is None
+
+    def test_accepts_new_with_tags_comma_value(self):
+        # "Új, címkékkel" itself contains a comma - must not break the parse.
+        ad = self.scraper.process_ad_item(self.item(condition="Új, címkékkel"), self.default_cfg())
+        assert ad is not None
+
+    def test_accepts_new_without_tags_comma_value(self):
+        ad = self.scraper.process_ad_item(
+            self.item(condition="Új, címkék nélkül"), self.default_cfg()
+        )
+        assert ad is not None
+
+    def test_rejects_good_condition(self):
+        # "Jó" is deliberately below the accepted bar (the Moly-5★ analog).
+        assert self.scraper.process_ad_item(self.item(condition="Jó"), self.default_cfg()) is None
+
+    def test_rejects_satisfactory_condition(self):
+        assert (
+            self.scraper.process_ad_item(self.item(condition="Kielégítő"), self.default_cfg())
+            is None
+        )
+
+    def test_unknown_condition_fails_safe(self):
+        # A condition string we don't know is rejected, not let through.
+        assert (
+            self.scraper.process_ad_item(self.item(condition="Újszerű"), self.default_cfg()) is None
+        )
+
+    def test_search_term_mismatch_returns_none(self):
+        cfg = self.default_cfg(search_terms=["playstation"])
+        assert self.scraper.process_ad_item(self.item(), cfg) is None
+
+    def test_missing_item_id_returns_none(self):
+        frag = self.item(href="/member/profile/123")
+        assert self.scraper.process_ad_item(frag, self.default_cfg()) is None
+
+    def test_strips_brand_segment_from_title(self):
+        frag = self.item(title="Nike pulóver, Márka: Nike", condition="Kiváló")
+        cfg = self.default_cfg(search_terms=["nike"], max_price=100000)
+        ad = self.scraper.process_ad_item(frag, cfg)
+        assert ad is not None
+        assert ad.title == "Nike pulóver"
+
+    def test_exclude_terms_drops_match(self):
+        cfg = self.default_cfg(exclude_terms=["orwell"])
+        assert self.scraper.process_ad_item(self.item(), cfg) is None
+
+    def test_build_search_url(self):
+        # Also exercises "+"-joining and accented-char percent-encoding (ó -> %C3%B3).
+        cfg = self.default_cfg(search_terms=["régi", "könyv"])
+        assert (
+            self.scraper.build_search_url(cfg)
+            == "https://www.vinted.hu/catalog?search_text=r%C3%A9gi+k%C3%B6nyv&order=newest_first"
+        )
+
+
+class TestVintedHelpers:
+    """Module-level helpers used by both the scraper and the health check."""
+
+    def anchor_html(self, condition, title="Egy könyv", item_id="111"):
+        title_attr = f"{title}, Állapot: {condition}, 1000.00 Ft, 1150.00 Ft"
+        return f'<a href="/items/{item_id}-egy-konyv" title="{title_attr}">x</a>'
+
+    def test_extract_condition_token_recognises_comma_value(self):
+        title = "Valami, Állapot: Új, címkék nélkül, Méret: M, 1000.00 Ft, 1150.00 Ft"
+        assert vinted.extract_condition_token(title) == "Új, címkék nélkül"
+
+    def test_extract_condition_token_plain_value(self):
+        title = "Valami, Állapot: Kiváló, 1000.00 Ft, 1150.00 Ft"
+        assert vinted.extract_condition_token(title) == "Kiváló"
+
+    def test_extract_condition_token_unknown(self):
+        title = "Valami, Állapot: Újszerű, 1000.00 Ft, 1150.00 Ft"
+        assert vinted.extract_condition_token(title) == "Újszerű"
+
+    def test_count_item_cards(self):
+        html = self.anchor_html("Kiváló", item_id="1") + self.anchor_html("Jó", item_id="2")
+        assert vinted.count_item_cards(html) == 2
+
+    def test_unknown_conditions_none_when_all_known(self):
+        html = self.anchor_html("Kiváló", item_id="1") + self.anchor_html("Kielégítő", item_id="2")
+        assert vinted.unknown_conditions(html) is None
+
+    def test_unknown_conditions_flags_new_label(self):
+        html = self.anchor_html("Kiváló", item_id="1") + self.anchor_html("Újszerű", item_id="2")
+        msg = vinted.unknown_conditions(html)
+        assert msg is not None
+        assert "Újszerű" in msg
+
+    def test_extract_seller_feedback_escaped_rsc(self):
+        # The real item page carries these in escaped RSC JSON.
+        html = r"...\"business\":false,\"feedback_count\":145,\"feedback_reputation\":0.98,..."
+        rep, count = vinted.extract_seller_feedback(html)
+        assert rep == 0.98
+        assert count == 145
+
+    def test_extract_seller_feedback_plain_json(self):
+        html = '..."feedback_count":10,"feedback_reputation":1,...'
+        rep, count = vinted.extract_seller_feedback(html)
+        assert rep == 1.0
+        assert count == 10
+
+    def test_extract_seller_feedback_missing(self):
+        assert vinted.extract_seller_feedback("<html>no seller data</html>") == (None, None)
+
+    def test_seller_is_trusted_at_both_thresholds(self):
+        # 4.5★ (0.9) and 5 reviews are the exact bars - both inclusive.
+        assert vinted.seller_is_trusted(0.9, 5) is True
+
+    def test_seller_rejected_reputation_too_low(self):
+        assert vinted.seller_is_trusted(0.89, 500) is False
+
+    def test_seller_rejected_too_few_reviews(self):
+        # A perfect score on only 4 reviews still fails (just under the bar).
+        assert vinted.seller_is_trusted(1.0, 4) is False
+
+    def test_seller_rejected_when_data_missing(self):
+        assert vinted.seller_is_trusted(None, 100) is False
+        assert vinted.seller_is_trusted(0.99, None) is False
+
+
+class TestVintedRequestDiscipline:
+    """The cache / pacing / header behaviour that keeps Vinted (DataDome + the
+    per-candidate item fetches) from tripping rate limits. Network-free: a
+    _FakeSession serves canned pages and records GETs."""
+
+    CATALOG = "https://www.vinted.hu/catalog?search_text=orwell&order=newest_first"
+    URL1 = "https://www.vinted.hu/items/111-orwell-1984"
+    URL2 = "https://www.vinted.hu/items/222-orwell-masik"
+
+    def _card(self, item_id, slug):
+        title = "Orwell 1984, Állapot: Kiváló, 1000.00 Ft, 1150.00 Ft"
+        return f'<a href="/items/{item_id}-{slug}" title="{title}">x</a>'
+
+    def _item_page(self, count, reputation):
+        return f'x\\"feedback_count\\":{count},\\"feedback_reputation\\":{reputation}x'
+
+    def _scraper(self, pages):
+        session = _FakeSession(pages)
+        s = pm.VintedScraper(session)
+        s._fetch_min_interval = 0  # no real sleeping in tests
+        s._fetch_jitter = 0
+        return s, session
+
+    def _cfg(self):
+        return pm.SearchConfig(site="Vinted", search_terms=["orwell"], max_price=5000)
+
+    def test_nav_headers_firefox_consistent(self):
+        # Sec-Fetch-* present, NO Chromium-only sec-ch-ua (UA is Firefox).
+        with_ref = vinted.VintedScraper._nav_headers("https://www.vinted.hu/")
+        assert with_ref["Sec-Fetch-Site"] == "same-origin"
+        assert with_ref["Referer"] == "https://www.vinted.hu/"
+        assert not any(h.lower().startswith("sec-ch-ua") for h in with_ref)
+        no_ref = vinted.VintedScraper._nav_headers()
+        assert no_ref["Sec-Fetch-Site"] == "none"
+        assert "Referer" not in no_ref
+
+    def test_seller_gate_keeps_only_trusted(self):
+        pages = {
+            self.CATALOG: self._card("111", "orwell-1984") + self._card("222", "orwell-masik"),
+            self.URL1: self._item_page(10, 1),  # trusted
+            self.URL2: self._item_page(2, 1),  # too few reviews
+        }
+        s, _ = self._scraper(pages)
+        ads = asyncio.run(s.fetch_advertisements(self._cfg()))
+        assert [a.id for a in ads] == ["Vinted_111"]
+
+    def test_cache_avoids_refetch_next_cycle(self):
+        pages = {
+            self.CATALOG: self._card("111", "orwell-1984") + self._card("222", "orwell-masik"),
+            self.URL1: self._item_page(10, 1),
+            self.URL2: self._item_page(2, 1),
+        }
+        s, session = self._scraper(pages)
+
+        asyncio.run(s.fetch_advertisements(self._cfg()))
+        first = list(session.get_calls)
+        # catalog + both item pages
+        assert first.count(self.URL1) == 1
+        assert first.count(self.URL2) == 1
+
+        asyncio.run(s.fetch_advertisements(self._cfg()))
+        # Second cycle: catalog re-fetched, but both item pages served from cache.
+        assert session.get_calls.count(self.URL1) == 1
+        assert session.get_calls.count(self.URL2) == 1
+        assert session.get_calls.count(self.CATALOG) == 2
+
+    def test_fetch_error_not_cached(self):
+        # URL1 missing from pages -> "" -> no feedback fields -> untrusted, and
+        # (per _seller_trusted) a real fetch exception is not cached. Here we
+        # assert the simpler property: an empty/parse-less page is untrusted.
+        pages = {self.CATALOG: self._card("111", "orwell-1984"), self.URL1: "no data here"}
+        s, _ = self._scraper(pages)
+        ads = asyncio.run(s.fetch_advertisements(self._cfg()))
+        assert ads == []

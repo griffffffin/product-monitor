@@ -3,7 +3,14 @@
 from .config import EMAIL_CONFIG, LOG_FILE
 from .models import Advertisement, MonitorConfig, SearchConfig
 from .monitor import MultiMarketplaceMonitor
-from .scrapers import BaseScraper, HardverAproScraper, JofogasScraper, MolyScraper, VateraScraper
+from .scrapers import (
+    BaseScraper,
+    HardverAproScraper,
+    JofogasScraper,
+    MolyScraper,
+    VateraScraper,
+    VintedScraper,
+)
 
 __version__ = "1.0.0"
 
@@ -18,5 +25,6 @@ __all__ = [
     "MolyScraper",
     "VateraScraper",
     "JofogasScraper",
+    "VintedScraper",
     "MultiMarketplaceMonitor",
 ]

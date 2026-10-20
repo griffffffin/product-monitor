@@ -33,6 +33,8 @@ from typing import Any, Callable, Dict, List
 from bs4 import BeautifulSoup
 
 from .models import SearchConfig
+from .scrapers.vinted import count_item_cards as vinted_card_counter
+from .scrapers.vinted import unknown_conditions as vinted_unknown_conditions
 
 HUGE_PRICE = 999_999_999
 
@@ -93,6 +95,16 @@ CHECKS: List[Dict[str, Any]] = [
         "raw_counter": jofogas_json_counter,
         "search_config": SearchConfig(site="Jofogas", search_terms=["könyv"], max_price=HUGE_PRICE),
     },
+    {
+        "site": "Vinted",
+        "raw_counter": vinted_card_counter,
+        # Beyond "did any card render", also flag an unrecognised condition
+        # string - a Vinted rename/new tier would silently rot the hardcoded
+        # condition filter otherwise (see scrapers/vinted.py). Returns an error
+        # message (-> failure email) or None.
+        "extra": vinted_unknown_conditions,
+        "search_config": SearchConfig(site="Vinted", search_terms=["könyv"], max_price=HUGE_PRICE),
+    },
 ]
 
 
@@ -104,6 +116,9 @@ async def check_site(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
     search_config = check["search_config"]
 
     try:
+        # Lets a scraper set up session state first (Vinted primes its cookie);
+        # no-op for the others.
+        await scraper.prepare()
         url = (
             scraper.build_search_url(search_config)
             if hasattr(scraper, "build_search_url")
@@ -113,6 +128,11 @@ async def check_site(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
             response.raise_for_status()
             html = await response.text(encoding="utf-8")
         raw_count = check["raw_counter"](html)
+        extra = check.get("extra")
+        if extra:
+            extra_error = extra(html)
+            if extra_error:
+                return {"site": site, "raw": raw_count, "error": extra_error}
     except Exception as e:
         return {"site": site, "error": str(e)}
 

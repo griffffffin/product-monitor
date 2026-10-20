@@ -4,15 +4,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
-An asyncio-based Python scraper that watches four Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price.
+An asyncio-based Python scraper that watches five Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price.
 
 ## Why this exists
 
-I wanted to know the moment a specific used Xbox Series S, a particular laptop cooler, or a handful of out-of-print psychology/pedagogy textbooks turned up for sale somewhere in Hungary, without manually refreshing four different marketplace sites. This runs unattended on a Raspberry Pi via systemd and only emails when there's actually something worth looking at. It's the sibling project of [house-monitor](https://github.com/griffffffin/house-monitor) — same author, same Raspberry Pi, same Gmail account for notifications.
+I wanted to know the moment a specific used Xbox Series S, a particular laptop cooler, or a handful of out-of-print psychology/pedagogy textbooks turned up for sale somewhere in Hungary, without manually refreshing several different marketplace sites. This runs unattended on a Raspberry Pi via systemd and only emails when there's actually something worth looking at. It's the sibling project of [house-monitor](https://github.com/griffffffin/house-monitor) — same author, same Raspberry Pi, same Gmail account for notifications.
 
 ## What it does
 
-- Scrapes 4 independent Hungarian marketplace sites — HardverApro, Vatera, Jófogás, and Moly (a books-specific marketplace) — each with its own page structure behind one common interface
+- Scrapes 5 independent Hungarian marketplace sites — HardverApro, Vatera, Jófogás, Moly (a books-specific marketplace), and Vinted (a pan-European C2C marketplace; used here for books only) — each with its own page structure behind one common interface
 - Filters by a per-search price ceiling and, optionally, search terms, a lower price bound (`min_price`), and exclusion terms (`exclude_terms`) that drop unwanted false matches
 - Detects both **new** listings and **price changes** on listings it's already seen
 - Sends a single, grouped-by-site email per check cycle (every 3 hours by default) via Gmail SMTP
@@ -24,6 +24,7 @@ I wanted to know the moment a specific used Xbox Series S, a particular laptop c
 - No cross-platform duplicate detection: the same item listed on two sites triggers two separate emails, not one merged one.
 - `matches_search_terms` does plain substring matching, not word-boundary matching — a single-letter search term like `"s"` would match almost anything containing that letter (e.g. "Xbox Series X" as well as "Series S"). This is a deliberately accepted looseness, not a bug — it's covered explicitly in `tests/test_parsing.py`, along with the trick of using one combined phrase term (e.g. `"series s"` instead of `"series"` + `"s"`) to get word-boundary-like precision back without any code change.
 - Moly requires hand-picking the exact URL of each book you want to watch; there's no keyword search across Moly's whole catalog.
+- Vinted is books-only here on purpose, with three hardcoded (not per-search) rules: (1) only the top three **condition** tiers pass — the two "new" tiers plus "Kiváló"/very good, mirroring Moly's fixed 5-star rule; (2) a **seller** hard gate — the seller must have a ≥4.5-star rating over at least 5 reviews (new/unproven sellers are skipped on purpose); (3) the stored/filtered price is the buyer-protection **total** (what you actually pay), not the bare listing price like the other sites. The seller check costs one extra item-page fetch per candidate (the catalog card carries no seller data), so it runs only on the few listings that already passed the cheap filters — and it caches its result per listing (7-day TTL) and paces the fetches, so in steady state it barely fetches at all. Vinted also sits behind DataDome bot protection, which — together with those extra fetches — makes it the most fragile, most rate-limit-prone scraper of the five; the daily self-check specifically watches it (including for renamed condition labels).
 - The unit tests run against static, hand-built fixtures — they verify parsing logic against a known structure, but by themselves they cannot catch a live site changing its markup out from under a scraper. That's not hypothetical: see the live smoke check section below.
 - See `CLAUDE.md` for the current status of the quality pass this project is going through.
 
@@ -65,7 +66,7 @@ Each entry in `searches` supports these fields:
 
 | field | required | meaning |
 |-------|----------|---------|
-| `site` | yes | one of `HardverApro`, `Vatera`, `Jofogas`, `Moly` |
+| `site` | yes | one of `HardverApro`, `Vatera`, `Jofogas`, `Moly`, `Vinted` |
 | `search_terms` | yes* | all terms must appear in the title (substring, diacritic-/case-insensitive). Moly ignores it and matches by `url` instead |
 | `max_price` | yes | upper price bound, in Ft |
 | `min_price` | no | lower price bound, in Ft — useful when a cheap unrelated item substring-matches the term (e.g. searching `"n305"` also hits a cheap `"N3050"` Celeron) |
@@ -73,6 +74,8 @@ Each entry in `searches` supports these fields:
 | `url` | no** | override the generated search URL |
 
 \* Moly needs `url`, not `search_terms`. \*\* Moly requires `url`; the others generate one from `search_terms`/`max_price` if omitted.
+
+Vinted uses `search_terms` like the other keyword sites, but with three hardcoded (not configurable — see the limitations above) behaviours: it only accepts listings in the top three condition tiers, it only accepts sellers with a ≥4.5-star rating over ≥5 reviews, and the price it filters/reports is the buyer-protection total, not the listing price.
 
 `min_price` and `exclude_terms` are both optional and default to "no lower bound" / "exclude nothing". They only tighten which listings pass the filter, so adding them to an existing search doesn't re-notify or lose already-seen listings.
 
@@ -112,7 +115,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-65 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 4), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic and once-a-day scheduling.
+111 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary and seller-gate/cache helpers), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic and once-a-day scheduling.
 
 ### Self-check: catching a silent break
 
@@ -134,9 +137,9 @@ That last row is the whole point: a zero-results day is not an incident, and get
 python3 scripts/live_smoke_check.py
 ```
 
-Runs all 4 scrapers for real, against the live sites, with no price/term filtering beyond a generic sanity search, and no email/database side effects. Reports a raw-card count and a matched count per site, so a broken selector (raw count drops to 0) is distinguishable from "genuinely nothing in stock right now" (matched count is 0 but raw isn't). Exits non-zero on a real failure. This is the same code the daily self-check above runs (`product_monitor/health_check.py`) — a bug in one can't hide a bug in the other.
+Runs all 5 scrapers for real, against the live sites, with no price/term filtering beyond a generic sanity search, and no email/database side effects. Reports a raw-card count and a matched count per site, so a broken selector (raw count drops to 0) is distinguishable from "genuinely nothing in stock right now" (matched count is 0 but raw isn't). Exits non-zero on a real failure. This is the same code the daily self-check above runs (`product_monitor/health_check.py`) — a bug in one can't hide a bug in the other.
 
-Note on CI: the weekly scheduled run of this check happens on GitHub's hosted runners, whose IP ranges some of these sites block outright (a red run has already been a false alarm twice, with all 4 sites healthy from a home connection minutes later). Treat a failure there as a prompt to run the check yourself, not as proof of a break. The in-service daily self-check runs from the same network as the real scraper, so it doesn't have this problem — which is precisely why it exists.
+Note on CI: the weekly scheduled run of this check happens on GitHub's hosted runners, whose IP ranges some of these sites block outright (a red run has already been a false alarm repeatedly, with all sites healthy from a home connection minutes later). Treat a failure there as a prompt to run the check yourself, not as proof of a break. The in-service daily self-check runs from the same network as the real scraper, so it doesn't have this problem — which is precisely why it exists.
 
 This isn't a theoretical safeguard. In July 2026, jofogas.hu was rebuilt on a Next.js/React frontend, and the scraper's DOM selectors (`div.general-item`, `id="listid_*"`) stopped matching anything — silently. No exception, no error log, just permanently zero Jofogas results every cycle, for an unknown length of time. The static-fixture unit tests didn't catch it (the fixtures still matched the *old* structure they were written against); only running the live smoke check against the real site did. The fix — parsing the `__NEXT_DATA__` JSON blob the page now embeds its listing data in, instead of scraping the DOM — is in `product_monitor/scrapers/jofogas.py`; the incident is written up in full in `CLAUDE.md`.
 
@@ -178,14 +181,14 @@ product_monitor/
 ├── models.py              — SearchConfig / Advertisement / MonitorConfig dataclasses
 ├── email_notifier.py      — EmailNotifier (Gmail SMTP, sent from a thread pool so it doesn't block the event loop)
 ├── scrapers/
-│   ├── base.py             — BaseScraper (normalize_text/parse_price/matches_search_terms/create_advertisement, shared by all 4 sites)
-│   ├── hardverapro.py, moly.py, vatera.py, jofogas.py — one file per site, each implements build_search_url() and process_ad_item()/fetch_advertisements()
-│   └── __init__.py          — re-exports all 5 classes
+│   ├── base.py             — BaseScraper (normalize_text/parse_price/matches_search_terms/create_advertisement + a prepare() hook, shared by all site scrapers)
+│   ├── hardverapro.py, moly.py, vatera.py, jofogas.py, vinted.py — one file per site, each implements build_search_url() and process_ad_item()/fetch_advertisements()
+│   └── __init__.py          — re-exports the base class and all 5 site scrapers
 ├── health_check.py         — the live self-check: hits every site, tells a broken scraper apart from an empty market (used by both the daily in-service check and scripts/live_smoke_check.py)
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed)
 
-tests/                    — 65 unit tests, no network calls (see Tests above)
+tests/                    — 111 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
 ```
 
