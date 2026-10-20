@@ -46,6 +46,10 @@ class MultiMarketplaceMonitor:
 
         # Daily health check - the date it last ran, so it fires once a day
         self.last_health_check_date: Optional[date] = None
+        # Persisted across restarts: which sites failed the previous daily check,
+        # so we can require N consecutive failures before alerting (see
+        # maybe_run_health_check / health_check_min_consecutive).
+        self.health_state_file = os.path.join(self.data_dir, "health-check-state.json")
 
         # Async session
         self.session: Optional[aiohttp.ClientSession] = None
@@ -462,16 +466,63 @@ class MultiMarketplaceMonitor:
 
         logging.info("Napi ellenőrzés eredménye:\n%s", health_check.format_report(results))
 
-        failed = [r for r in results if health_check.is_failure(r)]
-        if not failed:
+        # Alert only after a site fails N consecutive daily checks (each already
+        # retried inside check_site). This kills the transient-blip false alarms
+        # the production emails were - a one-off "broken pipe"/timeout no longer
+        # emails; a genuine break, which persists, still does (a day later).
+        now_failed = health_check.failing_sites(results)
+        prev_counts = self._load_health_failures()
+        new_counts = {site: prev_counts.get(site, 0) + 1 for site in now_failed}
+        self._save_health_failures(new_counts)
+
+        if not now_failed:
             logging.info("Napi ellenőrzés: minden oldal rendben.")
             return
 
-        sites = ", ".join(r["site"] for r in failed)
-        logging.error(f"Napi ellenőrzés: hibás oldal(ak): {sites}.")
-        subject, body = health_check.build_health_alert(results)
+        min_consecutive = max(1, getattr(self.config, "health_check_min_consecutive", 2))
+        confirmed = sorted(s for s in now_failed if new_counts[s] >= min_consecutive)
+        not_yet = sorted(s for s in now_failed if new_counts[s] < min_consecutive)
+
+        if not_yet:
+            logging.warning(
+                "Napi ellenőrzés: hibás, de még nem éri el a %d egymást követő "
+                "küszöböt (nem riasztok): %s.",
+                min_consecutive,
+                ", ".join(not_yet),
+            )
+
+        if not confirmed:
+            return
+
+        logging.error(f"Napi ellenőrzés: tartósan hibás oldal(ak): {', '.join(confirmed)}.")
+        subject, body = health_check.build_health_alert(results, confirmed)
         asyncio.create_task(self.email_notifier.send_notification(subject, body))
-        logging.info(f"Email küldés {len(failed)} hibás oldalról.")
+        logging.info(f"Email küldés {len(confirmed)} tartósan hibás oldalról.")
+
+    def _load_health_failures(self) -> Dict[str, int]:
+        """Per-site consecutive-failure counts from the last daily check. Any
+        problem (missing/corrupt file) -> empty, which just means 'no history',
+        so at worst a real break is alerted one day later, never a false alarm."""
+        if not getattr(self, "health_state_file", None):
+            return {}
+        try:
+            with open(self.health_state_file, encoding="utf-8") as f:
+                data = json.load(f)
+            counts = data.get("consecutive_failures", {})
+            return {str(k): int(v) for k, v in counts.items()}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _save_health_failures(self, counts: Dict[str, int]) -> None:
+        """Persist the per-site consecutive-failure counts (only currently
+        failing sites; a recovered site is simply absent -> its count resets)."""
+        if not getattr(self, "health_state_file", None):
+            return
+        try:
+            with open(self.health_state_file, "w", encoding="utf-8") as f:
+                json.dump({"consecutive_failures": counts}, f)
+        except OSError as e:
+            logging.warning(f"Health-check állapot mentése sikertelen: {e}")
 
     async def run(self):
         """Async continuous monitoring"""

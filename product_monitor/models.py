@@ -68,6 +68,10 @@ class MonitorConfig:
     # after this hour (local time), email only if a site is actually broken.
     health_check_enabled: bool = True
     health_check_hour: int = 16
+    # Alert only after a site has failed this many consecutive daily checks
+    # (each already retried). 2 = don't email on a one-off transient blip; 1 =
+    # alert immediately (the old behaviour).
+    health_check_min_consecutive: int = 2
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -96,4 +100,5 @@ class MonitorConfig:
             max_log_size_mb=data.get("max_log_size_mb", 100),
             health_check_enabled=data.get("health_check_enabled", True),
             health_check_hour=data.get("health_check_hour", 16),
+            health_check_min_consecutive=data.get("health_check_min_consecutive", 2),
         )

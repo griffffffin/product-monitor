@@ -28,7 +28,7 @@ Read-only: doesn't touch seen-products.json and doesn't send email itself.
 
 import asyncio
 import json
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Set
 
 from bs4 import BeautifulSoup
 
@@ -37,6 +37,22 @@ from .scrapers.vinted import count_item_cards as vinted_card_counter
 from .scrapers.vinted import unknown_conditions as vinted_unknown_conditions
 
 HUGE_PRICE = 999_999_999
+
+# Retry a failing site a couple of times before believing it. The production
+# failure emails (Sept 2026) were all transient connection hiccups - a single
+# "broken pipe" / "cannot connect" / timeout on one request - not real scraper
+# breaks: a genuine selector break (raw=0) persists across retries, a network
+# blip does not. Only the final result (after retries) is reported.
+_HEALTH_RETRY_ATTEMPTS = 3
+_HEALTH_RETRY_DELAY = 5.0  # seconds between attempts; module-level so tests zero it
+
+
+def _format_error(e: Exception) -> str:
+    """Human-readable error string. Some exceptions (notably asyncio timeouts)
+    stringify to '' - the empty 'ERROR:' lines in the production emails - so we
+    always prefix the exception type, keeping the message when there is one."""
+    detail = str(e).strip()
+    return f"{type(e).__name__}: {detail}" if detail else type(e).__name__
 
 
 def dom_card_counter(tag: str, css_class: str) -> Callable[[str], int]:
@@ -108,9 +124,9 @@ CHECKS: List[Dict[str, Any]] = [
 ]
 
 
-async def check_site(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
-    """Run one site's check against the live page. Reuses the monitor's own
-    session (same headers/timeout as production) instead of building its own."""
+async def _check_site_once(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
+    """One attempt at one site's check against the live page. Reuses the
+    monitor's own session (same headers/timeout as production)."""
     site = check["site"]
     scraper = monitor.scrapers[site]
     search_config = check["search_config"]
@@ -134,14 +150,30 @@ async def check_site(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
             if extra_error:
                 return {"site": site, "raw": raw_count, "error": extra_error}
     except Exception as e:
-        return {"site": site, "error": str(e)}
+        return {"site": site, "error": _format_error(e)}
 
     try:
         matched = await scraper.fetch_advertisements(search_config)
     except Exception as e:
-        return {"site": site, "raw": raw_count, "error": f"fetch_advertisements failed: {e}"}
+        return {
+            "site": site,
+            "raw": raw_count,
+            "error": f"fetch_advertisements: {_format_error(e)}",
+        }
 
     return {"site": site, "raw": raw_count, "matched": len(matched)}
+
+
+async def check_site(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
+    """One site's check, retried on failure (transient blip vs. real break).
+    Returns the last attempt's result once it succeeds or the retries run out."""
+    result = await _check_site_once(monitor, check)
+    attempts = 1
+    while is_failure(result) and attempts < _HEALTH_RETRY_ATTEMPTS:
+        await asyncio.sleep(_HEALTH_RETRY_DELAY)
+        result = await _check_site_once(monitor, check)
+        attempts += 1
+    return result
 
 
 async def run_health_check(monitor: Any) -> List[Dict[str, Any]]:
@@ -155,6 +187,12 @@ def is_failure(result: Dict[str, Any]) -> bool:
     (selector broken). 0 matches with raw cards present is NOT a failure - it
     just means nothing is for sale right now."""
     return "error" in result or result.get("raw", 0) == 0
+
+
+def failing_sites(results: List[Dict[str, Any]]) -> Set[str]:
+    """The set of site names that failed this run - used by the caller to gate
+    alerting on repeated failures (see MultiMarketplaceMonitor)."""
+    return {r["site"] for r in results if is_failure(r)}
 
 
 def format_report(results: List[Dict[str, Any]]) -> str:
@@ -174,26 +212,31 @@ def format_report(results: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_health_alert(results: List[Dict[str, Any]]) -> tuple[str, str]:
+def build_health_alert(results: List[Dict[str, Any]], alert_sites: List[str]) -> tuple[str, str]:
     """Subject + body for the failure email (Hungarian, like every other
-    outgoing message - see the language note in README.md)."""
-    failed = [r for r in results if is_failure(r)]
-    subject = f"Product Monitor: hibás oldal ({len(failed)} db)"
+    outgoing message - see the language note in README.md).
+
+    `alert_sites` are the sites actually being alerted on - those that failed on
+    two consecutive daily checks (each already retried). The full table below
+    still shows every site's current status for context."""
+    subject = f"Product Monitor: hibás oldal ({len(alert_sites)} db)"
 
     body_parts = [
-        "A napi ellenőrzés hibát talált - az alábbi oldal(ak) scraperje "
-        "valószínűleg nem működik:\n\n",
-        ", ".join(r["site"] for r in failed),
+        "A napi ellenőrzés két egymást követő napon is hibát talált (minden "
+        "kérés többszöri újrapróba után) - az alábbi oldal(ak) scraperje "
+        "valószínűleg tényleg nem működik:\n\n",
+        ", ".join(alert_sites),
         "\n\n",
         format_report(results),
         "\n\n",
         "Magyarázat:\n",
-        "- ERROR: az oldal letöltése vagy feldolgozása hibára futott.\n",
+        "- ERROR: az oldal letöltése vagy feldolgozása hibára futott (a hibaüzenet "
+        "elején a kivétel típusa áll).\n",
         "- WARN (0 raw cards): az oldal betöltődött, de egyetlen hirdetéskártyát "
         "sem talált a scraper - ez általában azt jelenti, hogy az oldal "
         "átalakult és a szelektorok elavultak.\n",
         "- A 0 találat (matched) önmagában NEM hiba, ezért erről nem is jön email.\n\n",
-        "Ez a hiba lehet átmeneti is (pl. az oldal ideiglenesen blokkolja a kéréseket). "
-        "Ha holnap is jön ilyen email, akkor valószínűleg tényleg elromlott valami.\n",
+        "Mivel ez már két egymást követő ellenőrzésen is elhasalt (nem egy átmeneti "
+        "hálózati akadás), érdemes ránézni.\n",
     ]
     return subject, "".join(body_parts)

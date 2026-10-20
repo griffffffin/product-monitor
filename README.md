@@ -115,7 +115,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-111 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary and seller-gate/cache helpers), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic and once-a-day scheduling.
+119 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary and seller-gate/cache helpers), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling.
 
 ### Self-check: catching a silent break
 
@@ -129,7 +129,9 @@ It emails you **only when something is actually wrong**:
 | 0 raw cards | The page loaded but no listings were found — selectors likely dead | Yes |
 | 0 matches, raw cards fine | Nothing for sale right now — the normal quiet state | **No** |
 
-That last row is the whole point: a zero-results day is not an incident, and getting an email about it every evening would train you to ignore the ones that matter. Configure with `health_check_enabled` / `health_check_hour`, or run the same check by hand at any time:
+That last row is the whole point: a zero-results day is not an incident, and getting an email about it every evening would train you to ignore the ones that matter.
+
+Two more guards keep the email trustworthy — the same lesson, applied to *transient* trouble. A failing site is **retried** a couple of times before it counts (a one-off broken pipe / timeout / connection reset is a network blip, not a broken scraper — a real selector break persists across retries). And a site only triggers an email after it fails **`health_check_min_consecutive` consecutive daily checks** (2 by default; the count is persisted across restarts). Together these killed a run of false-alarm emails from transient network hiccups: a genuine break, which keeps failing, still alerts — just a day later. Error lines also carry the exception type now (so a timeout reads `TimeoutError: …`, not a bare `ERROR:`). Configure with `health_check_enabled` / `health_check_hour` / `health_check_min_consecutive` (set the last to `1` for the old alert-immediately behaviour), or run the same check by hand at any time:
 
 ### Live smoke check
 
@@ -188,7 +190,7 @@ product_monitor/
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed)
 
-tests/                    — 111 unit tests, no network calls (see Tests above)
+tests/                    — 119 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
 ```
 
