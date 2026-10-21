@@ -1,5 +1,5 @@
-"""Deal watchers (product_monitor/deals): XiaomiPlanet price boxes.
-Network-free - the watchers get a fake session that
+"""Deal watchers (product_monitor/deals): XiaomiPlanet price boxes and
+asuspromo.hu promotions. Network-free - the watchers get a fake session that
 serves canned pages by URL and records every GET (injected via the
 constructor, no monkeypatching, same as the Vinted tests).
 
@@ -8,14 +8,14 @@ The HTML fragments mirror the live markup (verified 2026-10-21).
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import product_monitor as pm
 from product_monitor import health_check
-from product_monitor.deals import xiaomiplanet
+from product_monitor.deals import asuspromo, xiaomiplanet
 from product_monitor.deals.state import DealState
-from product_monitor.models import DealsConfig, XiaomiPlanetConfig
+from product_monitor.models import AsusPromoConfig, DealsConfig, XiaomiPlanetConfig
 
 
 class _FakeResponse:
@@ -738,6 +738,248 @@ class TestXiaomiPlanetHealthProbe:
         assert "error" in result
 
 
+# --- asuspromo.hu ------------------------------------------------------------
+
+ASUS_HOME = """<html><body><div class="promos">{banner}<div class="promo_list">{tiles}</div>
+<div id="footer"><p>Adatvédelmi szabályzat</p></div></div></body></html>"""
+
+
+def asus_home(*tiles, banner=""):
+    return ASUS_HOME.format(
+        banner=banner,
+        tiles="".join(
+            f'<a class="promo" target="_blank" href="{href}"><img src="/x.jpg" alt="{alt}"></a>'
+            for href, alt in tiles
+        ),
+    )
+
+
+CHALLENGE = "<html><head><title>One moment, please...</title></head><body>...</body></html>"
+UPGRADE_PAGE = (
+    "<html><body><script>var x=1;</script><h1>ASUS Upgrade Program</h1>"
+    "<p>200.000 forint támogatással régi gamer géped ROG Zephyrusra tudod cserélni, "
+    "2022. október 10. – 2022. december 31. között.</p><form><select><option>DigiPrime"
+    '</option></select></form><div class="modal">Adatvédelmi Szabályzat hosszú szöveg</div>'
+    '<div id="footer">ugyfelszolgalat</div></body></html>'
+)
+
+
+class TestAsusPromoParsing:
+    def test_tiles_are_parsed_and_raw_spaces_quoted(self):
+        promos = asuspromo.parse_promos(
+            asus_home(("/ASUS_Upgrade_Program", "ASUS Upgrade Program"), ("/Gamer raffle", "ROG"))
+        )
+        assert [(p.id, p.title, p.url) for p in promos] == [
+            (
+                "ASUS_Upgrade_Program",
+                "ASUS Upgrade Program",
+                asuspromo.BASE_URL + "ASUS_Upgrade_Program",
+            ),
+            ("Gamer raffle", "ROG", asuspromo.BASE_URL + "Gamer%20raffle"),
+        ]
+
+    def test_empty_list_is_not_an_error(self):
+        assert asuspromo.parse_promos(asus_home()) == []
+
+    def test_bot_interstitial_raises(self):
+        try:
+            asuspromo.parse_promos(CHALLENGE)
+        except asuspromo.PageStructureError:
+            return
+        raise AssertionError("expected PageStructureError")
+
+    def test_terms_excerpt_drops_scripts_forms_modal_footer(self):
+        terms = asuspromo.extract_terms(UPGRADE_PAGE)
+        assert terms.startswith("ASUS Upgrade Program 200.000 forint")
+        for noise in ("var x", "DigiPrime", "Adatvédelmi", "ugyfelszolgalat"):
+            assert noise not in terms
+        assert asuspromo.extract_terms(UPGRADE_PAGE, limit=20).endswith("…")
+
+
+UPGRADE_URL = asuspromo.BASE_URL + "ASUS_Upgrade_Program"
+UPGRADE_TILE = ("/ASUS_Upgrade_Program", "ASUS Upgrade Program")
+
+
+def bundle_page(remaining=349, partners=3, until="március 31."):
+    """A promo page with a live stock counter, like 2023's bundle promo."""
+    return (
+        "<html><body><h1>ASUS Táska csomag</h1><p>Vásárolj Zenbookot 2023. február 13. – "
+        f"2023. {until} között.</p><p>Résztvevő partnerek: {partners}</p>"
+        f"<p>Fennmaradó csomagok száma: {remaining}</p>"
+        '<div id="footer">ugyfelszolgalat</div></body></html>'
+    )
+
+
+class TestAsusPromoWatcher:
+    def make(self, tmp_path, home, page=UPGRADE_PAGE):
+        pages = {asuspromo.BASE_URL: home, UPGRADE_URL: page}
+        session = _FakeSession(pages)
+        sent = []
+        state = DealState(str(tmp_path / "deal-state.json"))
+        watcher = asuspromo.AsusPromoWatcher(session, state, lambda s, b: sent.append((s, b)))
+        self.now = datetime(2026, 10, 21, 12, 0)
+        watcher.clock = lambda: self.now
+        return watcher, pages, sent
+
+    def check(self, watcher, hours=0):
+        self.now += timedelta(hours=hours)
+        asyncio.run(watcher.check())
+
+    def test_new_promo_is_emailed_once_with_its_terms(self, tmp_path):
+        watcher, _, sent = self.make(
+            tmp_path, asus_home(("/ASUS_Upgrade_Program", "ASUS Upgrade Program"))
+        )
+        asyncio.run(watcher.check())
+        asyncio.run(watcher.check())
+        assert len(sent) == 1
+        subject, body = sent[0]
+        assert subject == "ASUS promóció: ASUS Upgrade Program"
+        assert "https://asuspromo.hu/ASUS_Upgrade_Program" in body
+        assert "2022. október 10." in body
+
+    def test_empty_list_sends_nothing(self, tmp_path):
+        watcher, _, sent = self.make(tmp_path, asus_home())
+        asyncio.run(watcher.check())
+        assert sent == []
+
+    def test_interstitial_neither_emails_nor_forgets(self, tmp_path):
+        watcher, pages, sent = self.make(
+            tmp_path, asus_home(("/ASUS_Upgrade_Program", "ASUS Upgrade Program"))
+        )
+        asyncio.run(watcher.check())
+        pages[asuspromo.BASE_URL] = CHALLENGE
+        asyncio.run(watcher.check())
+        assert len(sent) == 1
+        assert "ASUS_Upgrade_Program" in watcher.seen
+
+    def test_changed_promo_page_is_emailed_with_what_changed(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE))
+        self.check(watcher)
+        pages[UPGRADE_URL] = UPGRADE_PAGE.replace("2022. december 31.", "2023. január 31.")
+        self.check(watcher, hours=3)
+        assert len(sent) == 2
+        subject, body = sent[1]
+        assert subject == "ASUS promóció: ASUS Upgrade Program – megváltozott"
+        assert "- 200.000 forint" in body and "2022. december 31." in body
+        assert "+ 200.000 forint" in body and "2023. január 31." in body
+        self.check(watcher, hours=3)
+        assert len(sent) == 2
+
+    def test_stock_counter_alone_is_no_change_but_is_shown(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE), bundle_page(349))
+        self.check(watcher)
+        assert "Fennmaradó csomagok száma: 349" in sent[0][1]
+        pages[UPGRADE_URL] = bundle_page(345)
+        self.check(watcher, hours=3)
+        assert len(sent) == 1
+        pages[UPGRADE_URL] = bundle_page(340, until="április 30.")
+        self.check(watcher, hours=3)
+        assert len(sent) == 2
+        assert "+ Vásárolj Zenbookot 2023. február 13. – 2023. április 30. között." in sent[1][1]
+        assert "Jelenleg: Fennmaradó csomagok száma: 340" in sent[1][1]
+        assert "- Fennmaradó" not in sent[1][1]
+
+    def test_numbers_only_change_alerts_at_most_daily(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE), bundle_page())
+        self.check(watcher)
+        pages[UPGRADE_URL] = bundle_page(partners=4)
+        self.check(watcher, hours=3)
+        assert len(sent) == 2 and "+ Résztvevő partnerek: 4" in sent[1][1]
+        pages[UPGRADE_URL] = bundle_page(partners=5)
+        self.check(watcher, hours=3)
+        assert len(sent) == 2  # a counter we don't know: once a day is enough
+        pages[UPGRADE_URL] = bundle_page(partners=6)
+        self.check(watcher, hours=21)
+        assert len(sent) == 3
+        assert "- Résztvevő partnerek: 4" in sent[2][1]  # cumulated since the last alert
+        assert "+ Résztvevő partnerek: 6" in sent[2][1]
+
+    def test_text_change_is_not_held_back_by_the_daily_limit(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE), bundle_page())
+        self.check(watcher)
+        pages[UPGRADE_URL] = bundle_page(partners=4)
+        self.check(watcher, hours=3)
+        pages[UPGRADE_URL] = bundle_page(partners=4, until="április 30.")
+        self.check(watcher, hours=3)
+        assert len(sent) == 3
+
+    def test_tile_title_change_is_emailed(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE))
+        self.check(watcher)
+        pages[asuspromo.BASE_URL] = asus_home(("/ASUS_Upgrade_Program", "ASUS Upgrade 2.0"))
+        self.check(watcher, hours=3)
+        assert len(sent) == 2
+        assert sent[1][0] == "ASUS promóció: ASUS Upgrade 2.0 – megváltozott"
+        assert "A csempe címe: ASUS Upgrade Program → ASUS Upgrade 2.0" in sent[1][1]
+
+    def test_removed_and_returning_tile_are_emailed(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE))
+        self.check(watcher)
+        pages[asuspromo.BASE_URL] = asus_home()
+        self.check(watcher, hours=3)
+        assert sent[1][0] == "ASUS promóció: ASUS Upgrade Program – lekerült a főoldalról"
+        self.check(watcher, hours=3)
+        assert len(sent) == 2
+        pages[asuspromo.BASE_URL] = asus_home(UPGRADE_TILE)
+        self.check(watcher, hours=3)
+        assert sent[2][0] == "ASUS promóció: ASUS Upgrade Program – visszakerült a főoldalra"
+        assert "2022. október 10." in sent[2][1]
+
+    def test_homepage_text_is_watched_too(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home())
+        self.check(watcher)
+        assert sent == []  # first sight is the baseline
+        pages[asuspromo.BASE_URL] = asus_home(banner="<h2>Hamarosan új akció!</h2>")
+        self.check(watcher, hours=3)
+        assert len(sent) == 1
+        assert sent[0][0] == "ASUS promóció: asuspromo.hu főoldal – megváltozott"
+        assert "+ Hamarosan új akció!" in sent[0][1]
+
+    def test_unreadable_promo_page_is_not_a_change(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE))
+        self.check(watcher)
+        pages[UPGRADE_URL] = CHALLENGE
+        self.check(watcher, hours=3)
+        pages[UPGRADE_URL] = RuntimeError("timeout")
+        self.check(watcher, hours=3)
+        pages[UPGRADE_URL] = UPGRADE_PAGE
+        self.check(watcher, hours=3)
+        assert len(sent) == 1
+
+    def test_state_survives_a_restart(self, tmp_path):
+        watcher, pages, sent = self.make(tmp_path, asus_home(UPGRADE_TILE))
+        self.check(watcher)
+        state = DealState(str(tmp_path / "deal-state.json"))
+        state.load()
+        restarted = asuspromo.AsusPromoWatcher(watcher.session, state, watcher.send)
+        restarted.clock = watcher.clock
+        pages[UPGRADE_URL] = UPGRADE_PAGE.replace("2022. december 31.", "2023. január 31.")
+        asyncio.run(restarted.check())
+        assert len(sent) == 2 and "megváltozott" in sent[1][0]
+
+    def test_health_probe(self):
+        ok = asyncio.run(asuspromo.health_probe(_FakeSession({asuspromo.BASE_URL: asus_home()})))
+        assert ok == {"site": "AsusPromo", "raw": 1, "matched": 0}
+        assert not health_check.is_failure(ok)
+        bad = asyncio.run(asuspromo.health_probe(_FakeSession({asuspromo.BASE_URL: CHALLENGE})))
+        assert health_check.is_failure(bad)
+        # with a promotion up, its page has to be readable as well
+        home = asus_home(UPGRADE_TILE)
+        ok = asyncio.run(
+            asuspromo.health_probe(
+                _FakeSession({asuspromo.BASE_URL: home, UPGRADE_URL: UPGRADE_PAGE})
+            )
+        )
+        assert ok == {"site": "AsusPromo", "raw": 1, "matched": 1}
+        redesigned = UPGRADE_PAGE.replace('id="footer"', 'id="foot"')
+        bad = asyncio.run(
+            asuspromo.health_probe(
+                _FakeSession({asuspromo.BASE_URL: home, UPGRADE_URL: redesigned})
+            )
+        )
+        assert health_check.is_failure(bad)
+
+
 # --- config + monitor wiring -------------------------------------------------
 
 
@@ -745,6 +987,7 @@ class TestDealsConfig:
     def test_missing_section_disables_every_watcher(self):
         config = pm.MonitorConfig.from_dict({"searches": []})
         assert not config.deals.xiaomiplanet.enabled
+        assert not config.deals.asuspromo.enabled
 
     def test_section_is_parsed(self):
         config = pm.MonitorConfig.from_dict(
@@ -760,6 +1003,7 @@ class TestDealsConfig:
                         "highlight_price_eur": 300,
                         "box_check_seconds": 240,
                     },
+                    "asuspromo": {"enabled": True},
                 },
             }
         )
@@ -767,6 +1011,7 @@ class TestDealsConfig:
         assert xp.enabled and xp.search_terms == ["redmi note"] and xp.exclude_terms == ["13"]
         assert (xp.max_price_eur, xp.min_price_eur, xp.highlight_price_eur) == (400, 150, 300)
         assert xp.article_check_seconds == 60
+        assert config.deals.asuspromo.enabled
 
     def test_xiaomiplanet_without_search_terms_is_disabled(self):
         xp = XiaomiPlanetConfig.from_dict({"enabled": True, "search_terms": [" "]})
@@ -795,20 +1040,24 @@ class TestMonitorWiring:
         m.session = None
         m.deal_state_file = str(tmp_path / "deal-state.json")
         m.xiaomiplanet_watcher = None
+        m.asuspromo_watcher = None
         m._email_tasks = set()
         return m
 
     def test_watchers_follow_the_config(self, tmp_path):
         m = self.bare_monitor(
             tmp_path,
-            DealsConfig(xiaomiplanet=XiaomiPlanetConfig(enabled=True, search_terms=["redmi note"])),
+            DealsConfig(
+                xiaomiplanet=XiaomiPlanetConfig(enabled=True, search_terms=["redmi note"]),
+                asuspromo=AsusPromoConfig(enabled=True),
+            ),
         )
         m.create_deal_watchers()
-        assert m.xiaomiplanet_watcher is not None
+        assert m.xiaomiplanet_watcher is not None and m.asuspromo_watcher is not None
 
         m = self.bare_monitor(tmp_path, DealsConfig())
         m.create_deal_watchers()
-        assert m.xiaomiplanet_watcher is None
+        assert m.xiaomiplanet_watcher is None and m.asuspromo_watcher is None
 
     def test_a_failing_tick_does_not_escape_the_loop(self, tmp_path):
         m = self.bare_monitor(tmp_path, DealsConfig())

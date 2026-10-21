@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
-An asyncio-based Python scraper that watches five Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price. An optional *deal watcher* does the same for new-retail offers: coupon price boxes on xiaomiplanet.sk, checked every few minutes, since coupon stock can sell out fast.
+An asyncio-based Python scraper that watches five Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price. Two optional *deal watchers* do the same for new-retail offers: coupon price boxes on xiaomiplanet.sk (checked every few minutes, since coupon stock can sell out fast) and the promotion pages of asuspromo.hu.
 
 ## Why this exists
 
@@ -18,7 +18,7 @@ I wanted to know the moment a specific used Xbox Series S, a particular laptop c
 - Sends a single, grouped-by-site email per check cycle (every 3 hours by default) via Gmail SMTP
 - Persists seen listings to a local JSON file: batch-written, atomically replaced, with a `/tmp` fallback location if the primary data directory isn't writable
 - Checks its own scrapers once a day against the live sites (see [Self-check](#self-check-catching-a-silent-break)) and emails **only** when one is actually broken
-- Optionally watches a new-retail deal source on its own schedule — see [Deal watchers](#deal-watchers)
+- Optionally watches two new-retail deal sources on their own schedules — see [Deal watchers](#deal-watchers)
 
 ## What it doesn't do (honest limitations)
 
@@ -93,7 +93,7 @@ It runs forever (a `while` loop with an interruptible sleep between cycles) unti
 
 ### Deal watchers
 
-An optional `deals` section adds watchers for *new-retail* offers. They aren't marketplace searches — they track editorial price boxes, prices are in EUR, and they keep their own state file (`deal-state.json`) — so they're configured separately. A missing section (or `"enabled": false`) turns each off.
+An optional `deals` section adds watchers for *new-retail* offers. They aren't marketplace searches — they track editorial price boxes and promotion pages, prices are in EUR, and they keep their own state file (`deal-state.json`) — so they're configured separately. A missing section (or `"enabled": false`) turns each off.
 
 ```json
 "deals": {
@@ -104,7 +104,8 @@ An optional `deals` section adds watchers for *new-retail* offers. They aren't m
     "max_price_eur": 300,
     "min_price_eur": 120,
     "highlight_price_eur": 220
-  }
+  },
+  "asuspromo": { "enabled": true }
 }
 ```
 
@@ -123,6 +124,8 @@ This example watches the current Redmi Note generations up to 300 € (the older
 | `box_check_seconds` | `240` | how often each article carrying a tracked box is re-read (a box update doesn't touch its article's date, so only re-reading catches it) |
 
 It reads the site's public WordPress REST API, not the HTML pages, because the REST responses are freshly rendered while the pages come from a cache. For a handful of tracked boxes that's a few thousand small requests a day — re-reading every minute would be several times that on a small blog, which is why the box check is slower than the article check.
+
+**AsusPromo** ([asuspromo.hu](https://asuspromo.hu), ASUS Hungary's promotion page — trade-in programmes, bundles, coupons) runs in the regular 3-hour cycle and emails on any change: a new promotion (with the opening lines of its terms), a promotion page whose text changed (with the changed lines), a renamed tile, a tile that left or came back, and new text on the homepage itself. The site runs only a few promotions a year, typically for weeks, so there is nothing to filter. Promotion pages can carry a live stock counter ("Fennmaradó csomagok száma: …") that falls almost daily; it doesn't trigger an email on its own, but its current value is shown in every email. A change in numbers only (an unknown counter, or a date moved within the same month) is emailed at most once a day; any other text change goes out at once. An empty promotion list is a normal state; a page without the list at all (a bot-protection interstitial, or a redesign) is treated as an error, not as "no promotions" — and a promotion page that doesn't look like one is skipped, never reported as a change.
 
 Each watcher is covered by the daily self-check when enabled.
 
@@ -152,7 +155,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-177 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, state persistence across a restart).
+194 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart).
 
 ### Self-check: catching a silent break
 
@@ -225,12 +228,13 @@ product_monitor/
 │   └── __init__.py          — re-exports the base class and all 5 site scrapers
 ├── deals/
 │   ├── xiaomiplanet.py      — price-box parser + watcher (own fast loop, see Deal watchers)
+│   ├── asuspromo.py         — promotion-page parser + watcher (regular cycle)
 │   └── state.py              — deal-state.json (one section per watcher, atomic writes)
 ├── health_check.py         — the live self-check: hits every site, tells a broken scraper apart from an empty market (used by both the daily in-service check and scripts/live_smoke_check.py)
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle; also runs the deal watchers (XiaomiPlanet as a separate asyncio task)
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed)
 
-tests/                    — 177 unit tests, no network calls (see Tests above)
+tests/                    — 194 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
 ```
 

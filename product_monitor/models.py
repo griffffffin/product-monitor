@@ -106,16 +106,30 @@ class XiaomiPlanetConfig:
 
 
 @dataclass
+class AsusPromoConfig:
+    """asuspromo.hu promo watcher (see deals/asuspromo.py) - no filters: the
+    site runs only a few promotions a year, every one is worth an email."""
+
+    enabled: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AsusPromoConfig":
+        return cls(enabled=data.get("enabled", False))
+
+
+@dataclass
 class DealsConfig:
     """Optional "deals" section: new-retail deal/promo watchers, as opposed to
     the used-item marketplace searches. A missing section disables every watcher."""
 
     xiaomiplanet: XiaomiPlanetConfig = field(default_factory=XiaomiPlanetConfig)
+    asuspromo: AsusPromoConfig = field(default_factory=AsusPromoConfig)
 
     @classmethod
     def from_dict(cls, data: dict) -> "DealsConfig":
         return cls(
             xiaomiplanet=XiaomiPlanetConfig.from_dict(data.get("xiaomiplanet", {})),
+            asuspromo=AsusPromoConfig.from_dict(data.get("asuspromo", {})),
         )
 
 

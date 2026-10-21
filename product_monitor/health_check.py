@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, List, Set
 
 from bs4 import BeautifulSoup
 
-from .deals import xiaomiplanet
+from .deals import asuspromo, xiaomiplanet
 from .models import SearchConfig
 from .scrapers.vinted import count_item_cards as vinted_card_counter
 from .scrapers.vinted import unknown_conditions as vinted_unknown_conditions
@@ -130,6 +130,7 @@ CHECKS: List[Dict[str, Any]] = [
 # MonitorConfig.deals entry, so the daily check only probes enabled watchers.
 DEAL_CHECKS: List[Dict[str, Any]] = [
     {"site": "XiaomiPlanet", "deal": "xiaomiplanet", "probe": xiaomiplanet.health_probe},
+    {"site": "AsusPromo", "deal": "asuspromo", "probe": asuspromo.health_probe},
 ]
 
 
@@ -261,7 +262,8 @@ def build_health_alert(results: List[Dict[str, Any]], alert_sites: List[str]) ->
         "sem talált a scraper - ez általában azt jelenti, hogy az oldal "
         "átalakult és a szelektorok elavultak.\n",
         "- A 0 találat (matched) önmagában NEM hiba, ezért erről nem is jön email.\n",
-        "- XiaomiPlanet: a raw az akciós cikkekben talált árdobozok száma.\n\n",
+        "- XiaomiPlanet: a raw az akciós cikkekben talált árdobozok száma. AsusPromo: "
+        "a raw 1, ha az akciólista helye megvan az oldalon (0 akció nem hiba).\n\n",
         "Mivel ez már két egymást követő ellenőrzésen is elhasalt (nem egy átmeneti "
         "hálózati akadás), érdemes ránézni.\n",
     ]

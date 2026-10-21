@@ -8,7 +8,8 @@ fast loop), so they keep their own state file (deal-state.json) instead of
 going through seen-products.json.
 """
 
+from .asuspromo import AsusPromoWatcher
 from .state import DealState
 from .xiaomiplanet import XiaomiPlanetWatcher
 
-__all__ = ["DealState", "XiaomiPlanetWatcher"]
+__all__ = ["AsusPromoWatcher", "DealState", "XiaomiPlanetWatcher"]

@@ -15,7 +15,7 @@ import aiohttp
 
 from . import health_check
 from .config import LOG_FILE
-from .deals import DealState, XiaomiPlanetWatcher
+from .deals import AsusPromoWatcher, DealState, XiaomiPlanetWatcher
 from .email_notifier import EmailNotifier
 from .models import Advertisement, MonitorConfig
 from .scrapers import (
@@ -55,6 +55,7 @@ class MultiMarketplaceMonitor:
         # Deal watchers (config "deals" section) - created in run()
         self.deal_state_file = os.path.join(self.data_dir, "deal-state.json")
         self.xiaomiplanet_watcher: Optional[XiaomiPlanetWatcher] = None
+        self.asuspromo_watcher: Optional[AsusPromoWatcher] = None
         # References to in-flight email tasks, so they can't be garbage-collected
         # before the send finishes
         self._email_tasks: Set[asyncio.Task] = set()
@@ -447,13 +448,25 @@ class MultiMarketplaceMonitor:
     def create_deal_watchers(self) -> None:
         """Instantiate the watchers the config enables (needs the session)."""
         deals = self.config.deals
-        if not deals.xiaomiplanet.enabled:
+        if not (deals.xiaomiplanet.enabled or deals.asuspromo.enabled):
             return
         state = DealState(self.deal_state_file)
         state.load()
-        self.xiaomiplanet_watcher = XiaomiPlanetWatcher(
-            self.session, deals.xiaomiplanet, state, self._send_email
-        )
+        if deals.xiaomiplanet.enabled:
+            self.xiaomiplanet_watcher = XiaomiPlanetWatcher(
+                self.session, deals.xiaomiplanet, state, self._send_email
+            )
+        if deals.asuspromo.enabled:
+            self.asuspromo_watcher = AsusPromoWatcher(self.session, state, self._send_email)
+
+    async def check_asuspromo(self) -> None:
+        """Runs in the regular cycle - the site's promotions last weeks."""
+        if not self.asuspromo_watcher:
+            return
+        try:
+            await self.asuspromo_watcher.check()
+        except Exception as e:
+            logging.error(f"AsusPromo ellenőrzés sikertelen: {health_check._format_error(e)}")
 
     async def _xiaomiplanet_loop(self) -> None:
         """XiaomiPlanet's own fast loop, independent of the 3-hourly cycle:
@@ -620,6 +633,8 @@ class MultiMarketplaceMonitor:
                         self.send_notification(new_ads)
                     else:
                         logging.info("Nincs új hirdetés.")
+
+                    await self.check_asuspromo()
 
                     await self.maybe_run_health_check()
 

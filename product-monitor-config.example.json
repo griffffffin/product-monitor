@@ -51,6 +51,9 @@
       "highlight_price_eur": 220,
       "article_check_seconds": 60,
       "box_check_seconds": 240
+    },
+    "asuspromo": {
+      "enabled": false
     }
   }
 }
