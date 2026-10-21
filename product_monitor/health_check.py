@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Set
 
 from bs4 import BeautifulSoup
 
+from .deals import xiaomiplanet
 from .models import SearchConfig
 from .scrapers.vinted import count_item_cards as vinted_card_counter
 from .scrapers.vinted import unknown_conditions as vinted_unknown_conditions
@@ -124,10 +125,24 @@ CHECKS: List[Dict[str, Any]] = [
 ]
 
 
+# The deal watchers (product_monitor/deals) aren't scrapers - each brings its own
+# probe(session) returning a result dict of the same shape. "deal" names the
+# MonitorConfig.deals entry, so the daily check only probes enabled watchers.
+DEAL_CHECKS: List[Dict[str, Any]] = [
+    {"site": "XiaomiPlanet", "deal": "xiaomiplanet", "probe": xiaomiplanet.health_probe},
+]
+
+
 async def _check_site_once(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
     """One attempt at one site's check against the live page. Reuses the
     monitor's own session (same headers/timeout as production)."""
     site = check["site"]
+    if "probe" in check:
+        try:
+            return await check["probe"](monitor.session)
+        except Exception as e:
+            return {"site": site, "error": _format_error(e)}
+
     scraper = monitor.scrapers[site]
     search_config = check["search_config"]
 
@@ -176,10 +191,20 @@ async def check_site(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _deal_checks(monitor: Any) -> List[Dict[str, Any]]:
+    """The deal probes for the watchers the monitor's config enables. A config
+    without a deals section (the smoke-check script's) probes them all."""
+    deals = getattr(getattr(monitor, "config", None), "deals", None)
+    if deals is None:
+        return DEAL_CHECKS
+    return [c for c in DEAL_CHECKS if getattr(deals, c["deal"]).enabled]
+
+
 async def run_health_check(monitor: Any) -> List[Dict[str, Any]]:
     """Check every site. The monitor must already have a session and scrapers
     (i.e. create_session() has been called)."""
-    return list(await asyncio.gather(*(check_site(monitor, c) for c in CHECKS)))
+    checks = CHECKS + _deal_checks(monitor)
+    return list(await asyncio.gather(*(check_site(monitor, c) for c in checks)))
 
 
 def is_failure(result: Dict[str, Any]) -> bool:
@@ -235,7 +260,8 @@ def build_health_alert(results: List[Dict[str, Any]], alert_sites: List[str]) ->
         "- WARN (0 raw cards): az oldal betöltődött, de egyetlen hirdetéskártyát "
         "sem talált a scraper - ez általában azt jelenti, hogy az oldal "
         "átalakult és a szelektorok elavultak.\n",
-        "- A 0 találat (matched) önmagában NEM hiba, ezért erről nem is jön email.\n\n",
+        "- A 0 találat (matched) önmagában NEM hiba, ezért erről nem is jön email.\n",
+        "- XiaomiPlanet: a raw az akciós cikkekben talált árdobozok száma.\n\n",
         "Mivel ez már két egymást követő ellenőrzésen is elhasalt (nem egy átmeneti "
         "hálózati akadás), érdemes ránézni.\n",
     ]

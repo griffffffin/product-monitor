@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
-An asyncio-based Python scraper that watches five Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price.
+An asyncio-based Python scraper that watches five Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price. An optional *deal watcher* does the same for new-retail offers: coupon price boxes on xiaomiplanet.sk, checked every few minutes, since coupon stock can sell out fast.
 
 ## Why this exists
 
@@ -18,6 +18,7 @@ I wanted to know the moment a specific used Xbox Series S, a particular laptop c
 - Sends a single, grouped-by-site email per check cycle (every 3 hours by default) via Gmail SMTP
 - Persists seen listings to a local JSON file: batch-written, atomically replaced, with a `/tmp` fallback location if the primary data directory isn't writable
 - Checks its own scrapers once a day against the live sites (see [Self-check](#self-check-catching-a-silent-break)) and emails **only** when one is actually broken
+- Optionally watches a new-retail deal source on its own schedule — see [Deal watchers](#deal-watchers)
 
 ## What it doesn't do (honest limitations)
 
@@ -25,6 +26,7 @@ I wanted to know the moment a specific used Xbox Series S, a particular laptop c
 - `matches_search_terms` does plain substring matching, not word-boundary matching — a single-letter search term like `"s"` would match almost anything containing that letter (e.g. "Xbox Series X" as well as "Series S"). This is a deliberately accepted looseness, not a bug — it's covered explicitly in `tests/test_parsing.py`, along with the trick of using one combined phrase term (e.g. `"series s"` instead of `"series"` + `"s"`) to get word-boundary-like precision back without any code change.
 - Moly requires hand-picking the exact URL of each book you want to watch; there's no keyword search across Moly's whole catalog.
 - Vinted is books-only here on purpose, with three hardcoded (not per-search) rules: (1) only the top three **condition** tiers pass — the two "new" tiers plus "Kiváló"/very good, mirroring Moly's fixed 5-star rule; (2) a **seller** hard gate — the seller must have a ≥4.5-star rating over at least 5 reviews (new/unproven sellers are skipped on purpose); (3) the stored/filtered price is the buyer-protection **total** (what you actually pay), not the bare listing price like the other sites. The seller check costs one extra item-page fetch per candidate (the catalog card carries no seller data), so it runs only on the few listings that already passed the cheap filters — and it caches its result per listing (7-day TTL) and paces the fetches, so in steady state it barely fetches at all. Vinted also sits behind DataDome bot protection, which — together with those extra fetches — makes it the most fragile, most rate-limit-prone scraper of the five; the daily self-check specifically watches it (including for renamed condition labels).
+- The deal watchers only see what the source site has already published. The XiaomiPlanet watcher notices a new or re-published deal article within about a minute and a changed price box within a few minutes — but if a coupon's stock sells out faster than that, no polling interval saves it. Nothing faster was found: the site's Telegram channel cross-posts a few minutes later, and its sister price database (Deal Planet) mirrors the same prices with daily coupon checks.
 - The unit tests run against static, hand-built fixtures — they verify parsing logic against a known structure, but by themselves they cannot catch a live site changing its markup out from under a scraper. That's not hypothetical: see the live smoke check section below.
 - See `CLAUDE.md` for the current status of the quality pass this project is going through.
 
@@ -89,6 +91,41 @@ python3 -m product_monitor.main
 
 It runs forever (a `while` loop with an interruptible sleep between cycles) until it receives `SIGTERM`/`SIGINT` — in production that's a systemd service, see `CLAUDE.md` for the unit file.
 
+### Deal watchers
+
+An optional `deals` section adds watchers for *new-retail* offers. They aren't marketplace searches — they track editorial price boxes, prices are in EUR, and they keep their own state file (`deal-state.json`) — so they're configured separately. A missing section (or `"enabled": false`) turns each off.
+
+```json
+"deals": {
+  "xiaomiplanet": {
+    "enabled": true,
+    "search_terms": ["redmi note"],
+    "exclude_terms": ["13", "14"],
+    "max_price_eur": 300,
+    "min_price_eur": 120,
+    "highlight_price_eur": 220
+  }
+}
+```
+
+This example watches the current Redmi Note generations up to 300 € (the older 13 and 14 series excluded), with a 🔥 on anything at or under 220 €; the 120 € floor keeps out accessory variants, such as a charger listed inside a phone's box.
+
+**XiaomiPlanet** ([xiaomiplanet.sk](https://xiaomiplanet.sk), a Slovak Xiaomi deals blog) embeds "price boxes" in its articles: one box per product, one panel per variant, each with the coupon-applied price, coupon code, shop, warehouse, an "updated" stamp and the price history. The watcher filters boxes by product title and emails every deal under `max_price_eur`, not only new lows — a dearer deal that follows a cheaper, missed one is still worth knowing about. A variant under the limit is emailed when it is first seen, when it comes back under the limit, when its price moves at least 2% either way since its last alert (smaller moves are exchange-rate drift), when its coupon code changes, when the site posts it again (a new or re-dated article carrying the box), and when the editors re-save its box (a new "updated" stamp) — the last two even at an unchanged price and code, since a restock of the same coupon looks exactly like that. Only a sub-2% price move with no new stamp stays silent. The very first run sends one summary of everything currently under the limit instead (subject: `XiaomiPlanet: N db`). It runs on its own loop, independent of the 3-hour cycle:
+
+| field | default | meaning |
+|-------|---------|---------|
+| `search_terms` | — (required) | all must appear in the box's product title (substring, like the marketplace searches) |
+| `exclude_terms` | `[]` | drop a box whose title contains one of these as a **whole word** — so `"13"` excludes "Note 13" but not "Note 130" |
+| `max_price_eur` | `400` | alert limit, compared against the coupon-applied price (a card-payment surcharge, where the shop adds one, is shown in the email but not used for filtering) |
+| `min_price_eur` | none | lower bound — a phone's box can carry an accessory variant (a 21 € charger) |
+| `highlight_price_eur` | none | offers at or under this get a 🔥 in the email subject |
+| `article_check_seconds` | `60` | how often the latest-articles list (~1.4 KB) is checked — catches a new or re-published deal article |
+| `box_check_seconds` | `240` | how often each article carrying a tracked box is re-read (a box update doesn't touch its article's date, so only re-reading catches it) |
+
+It reads the site's public WordPress REST API, not the HTML pages, because the REST responses are freshly rendered while the pages come from a cache. For a handful of tracked boxes that's a few thousand small requests a day — re-reading every minute would be several times that on a small blog, which is why the box check is slower than the article check.
+
+Each watcher is covered by the daily self-check when enabled.
+
 ## Sample output
 
 Console output from a manual run - the format/timing is real (captured from an actual single-cycle run of the `product_monitor` package against the live sites, using a generic `"könyv"` (book) search term, not the owner's real configured searches, which are personal). Unlike house-monitor, product-monitor doesn't have a separate compact/`NOTICE`-level console format - a manual run prints the same full-detail lines you'd find in the log file. The real log messages are in Hungarian (see the Language note above); this image shows them translated to English for readability. The individual listing titles are placeholder/illustrative, not real sellers' listings - this project doesn't publish real scraped third-party content in its docs. Note the logger name (`product_monitor.scrapers.base`) reflects the real package structure, not a flat single-file layout:
@@ -115,7 +152,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-128 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, and the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling.
+177 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, state persistence across a restart).
 
 ### Self-check: catching a silent break
 
@@ -139,7 +176,7 @@ Two more guards keep the email trustworthy — the same lesson, applied to *tran
 python3 scripts/live_smoke_check.py
 ```
 
-Runs all 5 scrapers for real, against the live sites, with no price/term filtering beyond a generic sanity search, and no email/database side effects. Reports a raw-card count and a matched count per site, so a broken selector (raw count drops to 0) is distinguishable from "genuinely nothing in stock right now" (matched count is 0 but raw isn't). Exits non-zero on a real failure. This is the same code the daily self-check above runs (`product_monitor/health_check.py`) — a bug in one can't hide a bug in the other.
+Runs all 5 scrapers (plus the deal watchers' probes) for real, against the live sites, with no price/term filtering beyond a generic sanity search, and no email/database side effects. Reports a raw-card count and a matched count per site, so a broken selector (raw count drops to 0) is distinguishable from "genuinely nothing in stock right now" (matched count is 0 but raw isn't). Exits non-zero on a real failure. This is the same code the daily self-check above runs (`product_monitor/health_check.py`) — a bug in one can't hide a bug in the other.
 
 Note on CI: the weekly scheduled run of this check happens on GitHub's hosted runners, whose IP ranges some of these sites block outright (a red run has already been a false alarm repeatedly, with all sites healthy from a home connection minutes later). Treat a failure there as a prompt to run the check yourself, not as proof of a break. The in-service daily self-check runs from the same network as the real scraper, so it doesn't have this problem — which is precisely why it exists.
 
@@ -186,11 +223,14 @@ product_monitor/
 │   ├── base.py             — BaseScraper (normalize_text/parse_price/matches_search_terms/create_advertisement + a prepare() hook, shared by all site scrapers)
 │   ├── hardverapro.py, moly.py, vatera.py, jofogas.py, vinted.py — one file per site, each implements build_search_url() and process_ad_item()/fetch_advertisements()
 │   └── __init__.py          — re-exports the base class and all 5 site scrapers
+├── deals/
+│   ├── xiaomiplanet.py      — price-box parser + watcher (own fast loop, see Deal watchers)
+│   └── state.py              — deal-state.json (one section per watcher, atomic writes)
 ├── health_check.py         — the live self-check: hits every site, tells a broken scraper apart from an empty market (used by both the daily in-service check and scripts/live_smoke_check.py)
-├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle
+├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle; also runs the deal watchers (XiaomiPlanet as a separate asyncio task)
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed)
 
-tests/                    — 128 unit tests, no network calls (see Tests above)
+tests/                    — 177 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
 ```
 

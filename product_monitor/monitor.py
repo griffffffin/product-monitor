@@ -15,6 +15,7 @@ import aiohttp
 
 from . import health_check
 from .config import LOG_FILE
+from .deals import DealState, XiaomiPlanetWatcher
 from .email_notifier import EmailNotifier
 from .models import Advertisement, MonitorConfig
 from .scrapers import (
@@ -50,6 +51,13 @@ class MultiMarketplaceMonitor:
         # so we can require N consecutive failures before alerting (see
         # maybe_run_health_check / health_check_min_consecutive).
         self.health_state_file = os.path.join(self.data_dir, "health-check-state.json")
+
+        # Deal watchers (config "deals" section) - created in run()
+        self.deal_state_file = os.path.join(self.data_dir, "deal-state.json")
+        self.xiaomiplanet_watcher: Optional[XiaomiPlanetWatcher] = None
+        # References to in-flight email tasks, so they can't be garbage-collected
+        # before the send finishes
+        self._email_tasks: Set[asyncio.Task] = set()
 
         # Async session
         self.session: Optional[aiohttp.ClientSession] = None
@@ -431,6 +439,53 @@ class MultiMarketplaceMonitor:
         asyncio.create_task(self.email_notifier.send_notification(subject, body))
         logging.info(f"Email küldés {len(ads)} hirdetésről.")
 
+    def _send_email(self, subject: str, body: str) -> None:
+        task = asyncio.create_task(self.email_notifier.send_notification(subject, body))
+        self._email_tasks.add(task)
+        task.add_done_callback(self._email_tasks.discard)
+
+    def create_deal_watchers(self) -> None:
+        """Instantiate the watchers the config enables (needs the session)."""
+        deals = self.config.deals
+        if not deals.xiaomiplanet.enabled:
+            return
+        state = DealState(self.deal_state_file)
+        state.load()
+        self.xiaomiplanet_watcher = XiaomiPlanetWatcher(
+            self.session, deals.xiaomiplanet, state, self._send_email
+        )
+
+    async def _xiaomiplanet_loop(self) -> None:
+        """XiaomiPlanet's own fast loop, independent of the 3-hourly cycle:
+        coupon stock can sell out within ~15 minutes of being published. A
+        failing tick is logged and retried next interval; the daily health
+        check is what emails if the site stays broken."""
+        watcher = self.xiaomiplanet_watcher
+        if watcher is None:
+            return
+        interval = max(15, watcher.config.article_check_seconds)
+        failures = 0
+        logging.info(f"XiaomiPlanet figyelés indítása ({interval} mp-enként).")
+        while not self.shutdown:
+            deadline = time.monotonic() + interval
+            try:
+                await watcher.tick()
+                if failures:
+                    logging.info(f"XiaomiPlanet: újra elérhető ({failures} sikertelen kör után).")
+                failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                failures += 1
+                # First failure and then hourly-ish, not every minute of an outage
+                if failures == 1 or failures % 60 == 0:
+                    logging.warning(
+                        f"XiaomiPlanet ellenőrzés sikertelen ({failures}. egymás után): "
+                        f"{health_check._format_error(e)}"
+                    )
+            while not self.shutdown and time.monotonic() < deadline:
+                await asyncio.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
     async def maybe_run_health_check(self):
         """Once a day, in the first cycle at or after health_check_hour, verify
         the scrapers still work against the live sites and email ONLY if one is
@@ -538,6 +593,11 @@ class MultiMarketplaceMonitor:
         # Shutdown flag
         self.shutdown = False
 
+        self.create_deal_watchers()
+        deal_task = (
+            asyncio.create_task(self._xiaomiplanet_loop()) if self.xiaomiplanet_watcher else None
+        )
+
         # Signal handlers
         def signal_handler(signum, frame):
             logging.info(f"Signal {signum} fogadva.")
@@ -593,6 +653,13 @@ class MultiMarketplaceMonitor:
             logging.info("Kilépés...")
         finally:
             # Cleanup
+            if deal_task:
+                deal_task.cancel()
+                try:
+                    await deal_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
             if hasattr(self, "_ads_changed") and self._ads_changed:
                 try:
                     await self.save_seen_ads()

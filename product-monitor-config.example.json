@@ -39,5 +39,18 @@
 
   "health_check_enabled": true,
   "health_check_hour": 16,
-  "health_check_min_consecutive": 2
+  "health_check_min_consecutive": 2,
+
+  "deals": {
+    "xiaomiplanet": {
+      "enabled": false,
+      "search_terms": ["redmi note"],
+      "exclude_terms": ["13", "14"],
+      "max_price_eur": 300,
+      "min_price_eur": 120,
+      "highlight_price_eur": 220,
+      "article_check_seconds": 60,
+      "box_check_seconds": 240
+    }
+  }
 }

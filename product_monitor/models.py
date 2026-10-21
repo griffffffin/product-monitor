@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
@@ -53,6 +54,72 @@ class Advertisement:
 
 
 @dataclass
+class XiaomiPlanetConfig:
+    """xiaomiplanet.sk price-box watcher (see deals/xiaomiplanet.py).
+
+    search_terms/exclude_terms filter on the price box's product title.
+    search_terms are substrings (like every other search here); exclude_terms
+    match whole words, so "13" excludes "Redmi Note 13" but not "Redmi Note 130".
+    Prices are in EUR, compared against the coupon-applied price."""
+
+    enabled: bool = False
+    search_terms: List[str] = field(default_factory=list)
+    exclude_terms: List[str] = field(default_factory=list)
+    max_price_eur: float = 400.0
+    # Lower bound, like the marketplace searches' min_price: phone boxes can
+    # carry an accessory variant (a 21 € charger), which would otherwise alert
+    # as a deal on the phone itself. None = no lower bound.
+    min_price_eur: Optional[float] = None
+    # Offers at or under this get a 🔥 in the email subject; None = never.
+    highlight_price_eur: Optional[float] = None
+    # The latest-articles list is tiny (~1.4 KB) - this is the fast path that
+    # catches a new or re-published deal article.
+    article_check_seconds: int = 60
+    # Re-reading an article that carries a tracked price box costs the site a
+    # full render, so it runs less often.
+    box_check_seconds: int = 240
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "XiaomiPlanetConfig":
+        config = cls(
+            enabled=data.get("enabled", False),
+            search_terms=data.get("search_terms", []),
+            exclude_terms=data.get("exclude_terms", []),
+            max_price_eur=float(data.get("max_price_eur", 400)),
+            min_price_eur=(
+                float(data["min_price_eur"]) if data.get("min_price_eur") is not None else None
+            ),
+            highlight_price_eur=(
+                float(data["highlight_price_eur"])
+                if data.get("highlight_price_eur") is not None
+                else None
+            ),
+            article_check_seconds=data.get("article_check_seconds", 60),
+            box_check_seconds=data.get("box_check_seconds", 240),
+        )
+        if config.enabled and not any(t.strip() for t in config.search_terms):
+            # Without a filter every price box on the site would be tracked,
+            # and every article carrying one re-read every few minutes.
+            logging.error("XiaomiPlanet: search_terms nélkül nem indítható, kikapcsolva.")
+            config.enabled = False
+        return config
+
+
+@dataclass
+class DealsConfig:
+    """Optional "deals" section: new-retail deal/promo watchers, as opposed to
+    the used-item marketplace searches. A missing section disables every watcher."""
+
+    xiaomiplanet: XiaomiPlanetConfig = field(default_factory=XiaomiPlanetConfig)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DealsConfig":
+        return cls(
+            xiaomiplanet=XiaomiPlanetConfig.from_dict(data.get("xiaomiplanet", {})),
+        )
+
+
+@dataclass
 class MonitorConfig:
     """Main configuration"""
 
@@ -72,6 +139,7 @@ class MonitorConfig:
     # (each already retried). 2 = don't email on a one-off transient blip; 1 =
     # alert immediately (the old behaviour).
     health_check_min_consecutive: int = 2
+    deals: DealsConfig = field(default_factory=DealsConfig)
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -101,4 +169,5 @@ class MonitorConfig:
             health_check_enabled=data.get("health_check_enabled", True),
             health_check_hour=data.get("health_check_hour", 16),
             health_check_min_consecutive=data.get("health_check_min_consecutive", 2),
+            deals=DealsConfig.from_dict(data.get("deals", {})),
         )
