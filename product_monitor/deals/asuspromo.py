@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote, urljoin, urlparse
 
+import aiohttp
 from bs4 import BeautifulSoup, Tag
 
 from .state import DealState
@@ -186,7 +187,7 @@ def build_promo_email(items: List[PromoChange]) -> Tuple[str, str]:
 
 
 async def _get_html(session: Any, url: str) -> str:
-    async with session.get(url, timeout=30) as response:
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
         response.raise_for_status()
         return await response.text(encoding="utf-8")
 

@@ -55,6 +55,7 @@ from html import unescape
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
+import aiohttp
 from bs4 import BeautifulSoup, SoupStrainer
 
 from ..models import XiaomiPlanetConfig
@@ -357,7 +358,9 @@ def build_offer_email(
 
 
 async def _get_json(session: Any, url: str) -> Any:
-    async with session.get(url, timeout=30, headers={"Accept": "application/json"}) as response:
+    async with session.get(
+        url, timeout=aiohttp.ClientTimeout(total=30), headers={"Accept": "application/json"}
+    ) as response:
         response.raise_for_status()
         return json.loads(await response.text(encoding="utf-8"))
 

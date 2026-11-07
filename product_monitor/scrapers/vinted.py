@@ -33,6 +33,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
+import aiohttp
 from bs4 import BeautifulSoup, SoupStrainer
 
 from ..models import Advertisement, SearchConfig
@@ -276,7 +277,7 @@ class VintedScraper(BaseScraper):
                 self.logger.debug(f"Vinted cookie-törlés sikertelen: {e}")
             try:
                 async with self.session.get(
-                    BASE_URL, timeout=30, headers=self._nav_headers()
+                    BASE_URL, timeout=aiohttp.ClientTimeout(total=30), headers=self._nav_headers()
                 ) as response:
                     await response.read()
             except Exception as e:
@@ -437,7 +438,7 @@ class VintedScraper(BaseScraper):
 
     async def _get_html(self, url: str, referer: Optional[str] = None) -> str:
         async with self.session.get(
-            url, timeout=30, headers=self._nav_headers(referer)
+            url, timeout=aiohttp.ClientTimeout(total=30), headers=self._nav_headers(referer)
         ) as response:
             response.raise_for_status()
             return await response.text(encoding="utf-8")

@@ -1,6 +1,7 @@
 import json
 from typing import List, Optional
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from ..models import Advertisement, SearchConfig
@@ -56,7 +57,7 @@ class JofogasScraper(BaseScraper):
     async def fetch_advertisements(self, search_config: SearchConfig) -> List[Advertisement]:
         try:
             async with self.session.get(
-                self.build_search_url(search_config), timeout=30
+                self.build_search_url(search_config), timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 response.raise_for_status()
                 html = await response.text()

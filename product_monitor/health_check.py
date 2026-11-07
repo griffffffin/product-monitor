@@ -30,6 +30,7 @@ import asyncio
 import json
 from typing import Any, Callable, Dict, List, Set
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from .deals import asuspromo, xiaomiplanet
@@ -156,7 +157,7 @@ async def _check_site_once(monitor: Any, check: Dict[str, Any]) -> Dict[str, Any
             if hasattr(scraper, "build_search_url")
             else search_config.url
         )
-        async with monitor.session.get(url, timeout=30) as response:
+        async with monitor.session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
             response.raise_for_status()
             html = await response.text(encoding="utf-8")
         raw_count = check["raw_counter"](html)

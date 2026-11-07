@@ -1,6 +1,7 @@
 from typing import List, Optional
 from urllib.parse import urljoin
 
+import aiohttp
 from bs4 import BeautifulSoup
 
 from ..models import Advertisement, SearchConfig
@@ -59,7 +60,9 @@ class MolyScraper(BaseScraper):
                 self.logger.error("Moly.hu esetén URL megadása kötelező!")
                 return []
 
-            async with self.session.get(search_config.url, timeout=30) as response:
+            async with self.session.get(
+                search_config.url, timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
                 response.raise_for_status()
                 html = await response.text(encoding="utf-8")
 
