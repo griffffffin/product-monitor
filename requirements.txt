@@ -4,7 +4,7 @@
 #   /usr/bin/python3 -s scripts/check_pinned_deps.py
 # there; it exits non-zero when the installed versions no longer match these pins.
 # (Every line has to be an exact `name==version` pin, or the check refuses it.)
-aiohttp==3.13.3
+aiohttp==3.14.5
 aiofiles==25.1.0
 beautifulsoup4==4.14.3
 # apt's python3-lru-dict is "1.5.0", but its metadata reports 1.4.1, and PyPI has
