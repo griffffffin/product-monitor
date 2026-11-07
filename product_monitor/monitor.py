@@ -193,21 +193,32 @@ class MultiMarketplaceMonitor:
             return True
 
     def check_memory_usage(self):
-        """Check memory usage"""
+        """Warn (and collect garbage) above 200 MB, at most once per interval.
+
+        Optional diagnostics, so it must never cost a monitoring cycle: it runs
+        before the scrape, and an exception escaping from here would skip the
+        whole cycle - and, with the timestamp not advanced, every retry after
+        it. psutil may be missing, and the sandbox may hide what it reads
+        (it already hides /proc/stat; Process().memory_info() only
+        needs /proc/self), so any failure is logged and the next try waits a
+        full interval.
+        """
         current_time = time.time()
-        if current_time - self.last_memory_check > self.memory_check_interval:
-            try:
-                import psutil
-
-                process = psutil.Process()
-                memory_mb = process.memory_info().rss / 1024 / 1024
-                if memory_mb > 200:  # over 200MB
-                    logging.warning(f"Magas memória használat: {memory_mb:.1f}MB")
-                    gc.collect()
-
-                self.last_memory_check = current_time
-            except ImportError:
-                pass  # psutil isn't installed
+        if current_time - self.last_memory_check <= self.memory_check_interval:
+            return
+        self.last_memory_check = current_time
+        try:
+            import psutil
+        except ImportError:
+            return  # psutil isn't installed
+        try:
+            memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
+        except Exception as e:
+            logging.warning(f"Memóriahasználat nem mérhető: {type(e).__name__}: {e}")
+            return
+        if memory_mb > 200:  # over 200MB
+            logging.warning(f"Magas memória használat: {memory_mb:.1f}MB")
+            gc.collect()
 
     async def create_session(self):
         """Create the async session"""

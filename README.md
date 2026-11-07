@@ -173,7 +173,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-296 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart), the startup gates (state directory, mail credential parsing, `--check` and exit code 78, no import-time side effects), and the pinned-versions check (it has to fail on every kind of drift).
+302 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart), the startup gates (state directory, mail credential parsing, `--check` and exit code 78, no import-time side effects), the pinned-versions check (it has to fail on every kind of drift), and the optional memory check (it may fail, but never take a cycle down with it).
 
 ### Self-check: catching a silent break
 
@@ -262,7 +262,7 @@ product_monitor/
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle; also runs the deal watchers (XiaomiPlanet as a separate asyncio task)
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed): runs the startup gates (`preflight()`, also all that `--check` does), then the monitor
 
-tests/                    — 296 unit tests, no network calls (see Tests above)
+tests/                    — 302 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py;
                             check_pinned_deps.py, installed versions vs. the pins (run on the Pi)
 ```
