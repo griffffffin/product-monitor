@@ -173,7 +173,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-302 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart), the startup gates (state directory, mail credential parsing, `--check` and exit code 78, no import-time side effects), the pinned-versions check (it has to fail on every kind of drift), and the optional memory check (it may fail, but never take a cycle down with it).
+310 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart), the startup gates (state directory, mail credential parsing, `--check` and exit code 78, no import-time side effects), the pinned-versions check (it has to fail on every kind of drift), and the optional memory check (it may fail, but never take a cycle down with it).
 
 ### Self-check: catching a silent break
 
@@ -232,13 +232,13 @@ Dependency updates for the dev tools and the CI workflow's own actions are handl
 
 ### Pins = the Pi's packages
 
-Production runs the Raspberry Pi's `/usr/bin/python3` with its apt packages (`python3-aiohttp`, `python3-bs4`, ...), not a venv. `requirements.txt` pins exactly those versions, the transitive ones (`yarl`, `multidict`, `soupsieve`, ...) included, and `.python-version` names that Python, so a dev venv and CI test what actually runs. When the Pi's packages change (an apt upgrade), this check notices — run it on the Pi with the system Python:
+Production runs the Raspberry Pi's `/usr/bin/python3` with its apt packages (`python3-aiohttp`, `python3-bs4`, ...), not a venv. `requirements.txt` pins exactly those versions, the transitive ones (`yarl`, `multidict`, `soupsieve`, ...) and `aiodns` included (aiohttp uses it by itself when it's installed: it makes c-ares the DNS resolver), and `.python-version` names that Python, so a dev venv and CI test what actually runs. When the Pi's packages change (an apt upgrade), this check notices — run it on the Pi with the system Python:
 
 ```bash
 /usr/bin/python3 -s scripts/check_pinned_deps.py
 ```
 
-It compares every pin with the installed version and the interpreter with `.python-version`, and exits non-zero on any difference (CI runs it too, against its own install). The fix is then to move the pins to the new versions (and run the tests and the live smoke check on them), not the other way round. Two limits: a Debian/Ubuntu-only change that keeps the upstream version (a security backport such as `+esm1`, a rebuild) has nothing pip could pin, so it doesn't show; and `multidict`/`propcache` at these versions have no prebuilt wheels for Python 3.14 on PyPI; pip builds them from source, which (checked on an x86 laptop) gives their pure-Python implementations, while the Pi runs their C extensions.
+It compares every pin with the installed version and the interpreter with `.python-version`, flags a package aiohttp would pick up by itself (aiodns, Brotli, ...) that is installed but not pinned, and exits non-zero on any difference (CI runs it too, against its own install). The fix is then to move the pins to the new versions (and run the tests and the live smoke check on them), not the other way round. Two limits: a Debian/Ubuntu-only change that keeps the upstream version (a security backport such as `+esm1`, a rebuild) has nothing pip could pin, so it doesn't show; and `multidict`/`propcache` at these versions have no prebuilt wheels for Python 3.14 on PyPI; pip builds them from source, which (checked on an x86 laptop) gives their pure-Python implementations, while the Pi runs their C extensions.
 
 ## Architecture
 
@@ -262,7 +262,7 @@ product_monitor/
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle; also runs the deal watchers (XiaomiPlanet as a separate asyncio task)
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed): runs the startup gates (`preflight()`, also all that `--check` does), then the monitor
 
-tests/                    — 302 unit tests, no network calls (see Tests above)
+tests/                    — 310 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py;
                             check_pinned_deps.py, installed versions vs. the pins (run on the Pi)
 ```

@@ -24,6 +24,13 @@ _spec.loader.exec_module(cpd)
 
 CURRENT_PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 PYTEST_VERSION = pytest.__version__
+# The automatically used packages this environment has (the dev venv and CI
+# pin aiodns): a requirements file of our own has to pin them too.
+AUTO_USED_HERE = "".join(
+    f"{dist}=={cpd.installed_version(dist)}\n"
+    for module, dist in cpd.AUTO_USED
+    if cpd.importable(module) and cpd.installed_version(dist)
+)
 
 
 def lookup_from(installed):
@@ -121,12 +128,47 @@ class TestCheckPins:
         assert any(line.split() == ["psutil", "7.1.0", "(missing)", "MISSING"] for line in lines)
 
 
+class TestAutoUsed:
+    """Optional packages aiohttp switches to by itself (aiodns -> the c-ares
+    resolver): importable but unpinned means the dev venv and production take
+    different code paths, which the pins alone wouldn't show."""
+
+    def test_importable_and_pinned_is_fine(self):
+        assert cpd.unpinned_auto_used({"aiodns": "4.0.0"}, lambda m: m == "aiodns") == []
+
+    def test_importable_but_unpinned_is_reported(self):
+        assert cpd.unpinned_auto_used({"aiohttp": "3.13.3"}, lambda m: m == "aiodns") == ["aiodns"]
+
+    def test_not_importable_is_fine(self):
+        assert cpd.unpinned_auto_used({}, lambda m: False) == []
+
+    def test_pins_are_matched_by_normalized_name(self):
+        pinned = {"brotli": "1.1.0", "Backports_Zstd": "1.0.0"}
+        assert cpd.unpinned_auto_used(pinned, lambda m: True) == ["aiodns", "brotlicffi"]
+
+    def test_covers_what_aiohttp_picks_up(self):
+        modules = {module for module, _ in cpd.AUTO_USED}
+        assert {"aiodns", "brotli", "brotlicffi", "backports.zstd"} <= modules
+
+    def test_real_importable(self):
+        assert cpd.importable("json")
+        assert not cpd.importable("no_such_module_xyz")
+        assert not cpd.importable("no_such_package_xyz.sub")  # parent missing: no exception
+
+    def test_report_shows_an_unpinned_package(self):
+        report = cpd.format_report([], "3.14", (3, 14, 4), "/usr/bin/python3", ["aiodns"])
+        assert any(
+            line.split() == ["aiodns", "(none)", "(importable)", "UNPINNED"]
+            for line in report.splitlines()
+        )
+
+
 class TestMain:
     """The real script as a process, against small requirements files of our own."""
 
-    def run(self, tmp_path, requirements, python_version=CURRENT_PYTHON + "\n"):
+    def run(self, tmp_path, requirements, python_version=CURRENT_PYTHON + "\n", auto=True):
         req = tmp_path / "requirements.txt"
-        req.write_text(requirements, encoding="utf-8")
+        req.write_text(requirements + (AUTO_USED_HERE if auto else ""), encoding="utf-8")
         pyver = tmp_path / ".python-version"
         pyver.write_text(python_version, encoding="utf-8")
         return subprocess.run(
@@ -146,13 +188,13 @@ class TestMain:
     def test_exit_0_when_everything_matches(self, tmp_path):
         result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}\n")
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "All 1 pins match" in result.stdout
+        assert "pins match, and the Python version too." in result.stdout
 
     def test_exit_1_on_a_wrong_version(self, tmp_path):
         result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}.1\n")
         assert result.returncode == 1
         assert "DIFFERS" in result.stdout
-        assert "DRIFT: 1 of 1 packages differ" in result.stdout
+        assert "DRIFT: 1 of " in result.stdout and "packages differ" in result.stdout
 
     def test_exit_1_on_a_missing_package(self, tmp_path):
         result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}\nno-such-distribution-xyz==1.0\n")
@@ -166,9 +208,16 @@ class TestMain:
         assert "MISMATCH" in result.stdout
         assert "Python is not" in result.stdout
 
+    @pytest.mark.skipif(not AUTO_USED_HERE, reason="no automatically used package installed")
+    def test_exit_1_on_an_importable_auto_used_package_left_unpinned(self, tmp_path):
+        result = self.run(tmp_path, f"pytest=={PYTEST_VERSION}\n", auto=False)
+        assert result.returncode == 1
+        assert "UNPINNED" in result.stdout
+        assert "aiohttp uses it by itself" in result.stdout
+
     @pytest.mark.parametrize("requirements", ["pytest>=1.0\n", "", "# nothing pinned\n"])
     def test_exit_2_on_requirements_it_cannot_judge(self, tmp_path, requirements):
-        result = self.run(tmp_path, requirements)
+        result = self.run(tmp_path, requirements, auto=False)
         assert result.returncode == 2
         assert result.stderr.startswith("ERROR:")
 

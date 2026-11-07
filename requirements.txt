@@ -11,12 +11,21 @@ beautifulsoup4==4.14.3
 # no 1.5.0, so 1.4.1 is the only version pip and the check can both name.
 lru-dict==1.4.1
 
+# Optional, but aiohttp uses it by itself when it is installed - and the Pi has
+# it (python3-aiodns): it makes c-ares the default DNS resolver instead of the
+# threaded getaddrinfo one. The check flags such a package installed unpinned.
+aiodns==4.0.0
+pycares==5.0.1
+
 # optional: enables memory-usage logging in check_memory_usage(); the
 # service runs fine without it (import is wrapped in try/except)
 psutil==7.1.0
 
 # Transitive dependencies, pinned too so that a laptop venv and CI resolve the
-# same versions as the Pi instead of the newest ones on PyPI.
+# same versions as the Pi instead of the newest ones on PyPI. (Not cffi and
+# pycparser, which pycares pulls in from PyPI: the Pi has only the cffi
+# backend module, python3-cffi-backend 2.0.0, without distribution metadata,
+# so a pin of them could never match there.)
 aiohappyeyeballs==2.6.1
 aiosignal==1.4.0
 attrs==25.4.0
