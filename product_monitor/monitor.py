@@ -3,6 +3,7 @@ import gc
 import json
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -30,6 +31,12 @@ from .scrapers import (
 
 
 class MultiMarketplaceMonitor:
+    # How long the cleanup after a shutdown signal waits for the step that
+    # records a finished scrape, and then for emails already handed over.
+    # systemd sends SIGKILL 60 s after SIGTERM (TimeoutStopSec=60), and the
+    # host installer's stop test allows 30 s; normally both take well under 1 s.
+    SHUTDOWN_WAIT_SECONDS = 10
+
     def __init__(self, config: MonitorConfig, data_dir: str):
         """config and data_dir come from main.preflight(), whose startup gates
         have already checked them (data_dir exists and is writable). Nothing
@@ -62,6 +69,11 @@ class MultiMarketplaceMonitor:
         # References to in-flight email tasks, so they can't be garbage-collected
         # before the send finishes
         self._email_tasks: Set[asyncio.Task] = set()
+        # The step of check_new_advertisements() that records a finished scrape
+        # (runs shielded from a shutdown; run()'s cleanup waits for it)
+        self._record_task: Optional[asyncio.Task] = None
+        # The running cycle loop, which a shutdown signal cancels
+        self._cycle_task: Optional[asyncio.Task] = None
 
         # Async session
         self.session: Optional[aiohttp.ClientSession] = None
@@ -265,9 +277,17 @@ class MultiMarketplaceMonitor:
         }
 
     async def check_new_advertisements(self) -> List[Advertisement]:
-        """Async check for new listings"""
-        new_ads = []
+        """Run every search, then record the results: new listings are marked
+        seen, saved and emailed.
 
+        A shutdown can interrupt the searches (they are only network requests;
+        nothing found so far counts as seen, so the next start finds it again),
+        but not the recording that follows: interrupted after the save and
+        before the email, a listing would count as seen without ever having
+        been emailed, and a half-done save would race the final save in run()'s
+        cleanup on the same .tmp file. So the recording runs as its own task,
+        shielded, and the cleanup waits for it (self._record_task).
+        """
         # Concurrent processing bounded by a semaphore
         semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
 
@@ -288,7 +308,12 @@ class MultiMarketplaceMonitor:
         tasks = [fetch_with_semaphore(config) for config in self.config.searches]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process the results
+        self._record_task = asyncio.ensure_future(self._record_results(results))
+        return await asyncio.shield(self._record_task)
+
+    async def _record_results(self, results: list) -> List[Advertisement]:
+        """The searches' results -> seen, saved, emailed. See check_new_advertisements."""
+        new_ads: List[Advertisement] = []
         for result in results:
             if isinstance(result, BaseException):
                 logging.error(f"Hiba a keresés során: {result}")
@@ -302,6 +327,9 @@ class MultiMarketplaceMonitor:
         if new_ads:
             await self.save_seen_ads()
             gc.collect()
+            self.send_notification(new_ads)
+        else:
+            logging.info("Nincs új hirdetés.")
 
         return new_ads
 
@@ -405,8 +433,8 @@ class MultiMarketplaceMonitor:
 
         subject, body = self.build_notification(ads)
 
-        # Async email send
-        asyncio.create_task(self.email_notifier.send_notification(subject, body))
+        # Async email send (tracked, so a shutdown waits for it)
+        self._send_email(subject, body)
         logging.info(f"Email küldés {len(ads)} hirdetésről.")
 
     def _send_email(self, subject: str, body: str) -> None:
@@ -533,7 +561,7 @@ class MultiMarketplaceMonitor:
 
         logging.error(f"Napi ellenőrzés: tartósan hibás oldal(ak): {', '.join(confirmed)}.")
         subject, body = health_check.build_health_alert(results, confirmed)
-        asyncio.create_task(self.email_notifier.send_notification(subject, body))
+        self._send_email(subject, body)
         logging.info(f"Email küldés {len(confirmed)} tartósan hibás oldalról.")
 
     def _load_health_failures(self) -> Dict[str, int]:
@@ -562,99 +590,116 @@ class MultiMarketplaceMonitor:
             logging.warning(f"Health-check állapot mentése sikertelen: {e}")
 
     async def run(self):
-        """Async continuous monitoring"""
+        """Continuous monitoring until SIGTERM/SIGINT.
+
+        A signal cancels the cycle wherever it is - a scraper's HTTP request, the
+        daily check, the wait between cycles - not just between cycles: systemd
+        sends SIGKILL 60 s after SIGTERM, and a SIGKILL skips the cleanup below
+        (the final save among them). Only the cycle task is cancelled, not run()
+        itself, so the cleanup awaits normally.
+        """
         logging.info("Product Monitor indítása...")
         logging.info(f"Állapot-könyvtár: {self.data_dir}")
 
-        # Initialize the session and scrapers
-        await self.create_session()
-
-        # Load already-seen listings
-        self.seen_ads = await self.load_seen_ads()
-        self._ads_changed = False
-
-        # Shutdown flag
         self.shutdown = False
+        self._cycle_task = None
+        deal_task: Optional[asyncio.Task] = None
+        loop = asyncio.get_running_loop()
 
-        self.create_deal_watchers()
-        deal_task = (
-            asyncio.create_task(self._xiaomiplanet_loop()) if self.xiaomiplanet_watcher else None
-        )
-
-        # Signal handlers
-        def signal_handler(signum, frame):
+        def on_signal(signum: int) -> None:
             logging.info(f"Signal {signum} fogadva.")
             logging.info("Leállítás...")
             self.shutdown = True
+            if self._cycle_task is not None:
+                self._cycle_task.cancel()
 
-        import signal
-
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-
+        signals = (signal.SIGTERM, signal.SIGINT)
+        for signum in signals:
+            loop.add_signal_handler(signum, on_signal, int(signum))
         try:
-            while not self.shutdown:
-                try:
-                    self.cleanup_old_ads()
-                    self.check_memory_usage()
+            try:
+                await self.create_session()
+                self.seen_ads = await self.load_seen_ads()
+                self._ads_changed = False
 
-                    new_ads = await self.check_new_advertisements()
-                    if new_ads:
-                        self.send_notification(new_ads)
-                    else:
-                        logging.info("Nincs új hirdetés.")
+                self.create_deal_watchers()
+                if self.xiaomiplanet_watcher:
+                    deal_task = asyncio.create_task(self._xiaomiplanet_loop())
 
-                    await self.check_asuspromo()
-
-                    await self.maybe_run_health_check()
-
-                    logging.info("Sikeres ciklus.")
-                    logging.info(f"Várakozás {self.config.check_interval / 3600:.0f} órát...")
-
-                    # Interruptible sleep - check for shutdown every 5 seconds
-                    for _ in range(0, self.config.check_interval, 5):
-                        if self.shutdown:
-                            break
-                        await asyncio.sleep(min(5, self.config.check_interval))
-
-                except asyncio.CancelledError:
-                    logging.info("Async task megszakítva.")
-                    logging.info("Kilépés...")
-                    break
-                except KeyboardInterrupt:
-                    logging.info("Keyboard interrupt fogadva.")
-                    logging.info("Kilépés...")
-                    break
-                except Exception as e:
-                    logging.error(f"Hiba a figyelés során: {e}", exc_info=True)
-                    # Shorter sleep on error, but still interruptible
-                    for _ in range(0, 60, 5):
-                        if self.shutdown:
-                            break
-                        await asyncio.sleep(5)
-
-        except KeyboardInterrupt:
-            logging.info("Keyboard interrupt.")
-            logging.info("Kilépés...")
+                if not self.shutdown:
+                    self._cycle_task = asyncio.create_task(self._cycle_loop())
+                    try:
+                        await self._cycle_task
+                    except asyncio.CancelledError:
+                        if not self.shutdown:
+                            raise  # cancelled from outside, not by a signal
+                        logging.info("Kör megszakítva a leállítás miatt.")
+            finally:
+                await self._shutdown_cleanup(deal_task)
         finally:
-            # Cleanup
-            if deal_task:
-                deal_task.cancel()
-                try:
-                    await deal_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+            # Only now: a second signal during the cleanup is just logged
+            for signum in signals:
+                loop.remove_signal_handler(signum)
 
-            if hasattr(self, "_ads_changed") and self._ads_changed:
-                try:
-                    await self.save_seen_ads()
-                except Exception as e:
-                    logging.error(f"Hiba a mentés során: {e}")
+    async def _cycle_loop(self) -> None:
+        """The regular cycle, forever - run() cancels it on a shutdown signal."""
+        while True:
+            try:
+                self.cleanup_old_ads()
+                self.check_memory_usage()
 
-            if self.session:
-                try:
-                    await self.session.close()
-                except Exception as e:
-                    logging.error(f"Hiba session lezárásakor: {e}")
+                await self.check_new_advertisements()
 
-            logging.info("Leállítva.")
+                await self.check_asuspromo()
+
+                await self.maybe_run_health_check()
+
+                logging.info("Sikeres ciklus.")
+                logging.info(f"Várakozás {self.config.check_interval / 3600:.0f} órát...")
+                await asyncio.sleep(self.config.check_interval)
+
+            except Exception as e:
+                logging.error(f"Hiba a figyelés során: {e}", exc_info=True)
+                await asyncio.sleep(60)  # shorter wait after an error
+
+    async def _shutdown_cleanup(self, deal_task: Optional[asyncio.Task]) -> None:
+        if deal_task:
+            deal_task.cancel()
+            try:
+                await deal_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        # A finished scrape's recording still running (shielded, see
+        # check_new_advertisements): let it end before the final save, which
+        # would otherwise write the same .tmp file at the same time.
+        record = self._record_task
+        if record is not None and not record.done():
+            logging.info("Leállítás: a megkezdett mentés befejezése...")
+            try:
+                await asyncio.wait_for(asyncio.shield(record), self.SHUTDOWN_WAIT_SECONDS)
+            except Exception as e:
+                logging.error(f"Hiba a megkezdett mentés befejezésekor: {e!r}")
+
+        if getattr(self, "_ads_changed", False) and (record is None or record.done()):
+            try:
+                await self.save_seen_ads()
+            except Exception as e:
+                logging.error(f"Hiba a mentés során: {e}")
+
+        # Emails already handed over (their listings already count as seen):
+        # give them a bounded chance to go out before the loop stops.
+        pending = [task for task in self._email_tasks if not task.done()]
+        if pending:
+            logging.info(f"Leállítás: várakozás {len(pending)} levél elküldésére...")
+            _, not_sent = await asyncio.wait(pending, timeout=self.SHUTDOWN_WAIT_SECONDS)
+            if not_sent:
+                logging.error(f"Leállítás: {len(not_sent)} levél nem ment el időben.")
+
+        if self.session:
+            try:
+                await self.session.close()
+            except Exception as e:
+                logging.error(f"Hiba session lezárásakor: {e}")
+
+        logging.info("Leállítva.")

@@ -122,6 +122,7 @@ def make_monitor(hour=17, enabled=True, last_date=None, min_consecutive=1, state
     m.last_health_check_date = last_date
     m.health_state_file = state_file
     m.email_notifier = FakeNotifier()
+    m._email_tasks = set()
     return m
 
 

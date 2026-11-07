@@ -5,6 +5,11 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any, Dict
 
+# Per socket operation. Without one, a stalled SMTP server would hold the
+# sending thread forever - and with it a shutdown, since asyncio.run() waits
+# for the executor's threads before the process can exit.
+SMTP_TIMEOUT_SECONDS = 20
+
 
 class EmailNotifier:
     def __init__(self, config: Dict[str, Any]):
@@ -30,7 +35,9 @@ class EmailNotifier:
             message["Subject"] = subject
             message.attach(MIMEText(body, "plain", "utf-8"))
 
-            with smtplib.SMTP(self.config["smtp_server"], self.config["smtp_port"]) as server:
+            with smtplib.SMTP(
+                self.config["smtp_server"], self.config["smtp_port"], timeout=SMTP_TIMEOUT_SECONDS
+            ) as server:
                 server.starttls()
                 server.login(self.config["sender_email"], self.config["sender_password"])
                 server.send_message(message)
