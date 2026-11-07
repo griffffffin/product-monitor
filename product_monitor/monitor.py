@@ -3,6 +3,7 @@ import gc
 import json
 import logging
 import os
+import socket
 import sys
 import time
 from collections import defaultdict
@@ -222,7 +223,18 @@ class MultiMarketplaceMonitor:
 
     async def create_session(self):
         """Create the async session"""
+        # IPv4 only: the Pi has no IPv6 route (just a link-local address).
+        # aiohttp's default resolver there is c-ares (aiodns), which asks for A
+        # and AAAA together and, when the A answer comes late, returns only the
+        # IPv6 addresses - the connect then fails at once with "Network is
+        # unreachable", and ttl_dns_cache below keeps serving that answer for
+        # 5 minutes: every request to the host fails until it expires (seen
+        # 2026-10-24..31: a XiaomiPlanet failure like this lasted 6 of its 1-minute
+        # ticks in 53 of 59 cases, and all 8 Moly/Vinted/Vatera searches failed together).
+        # With AF_INET only A records are asked, and a late answer ends in a DNS
+        # error, which isn't cached, so the next request asks again.
         connector = aiohttp.TCPConnector(
+            family=socket.AF_INET,
             limit=self.config.max_concurrent_requests,
             limit_per_host=2,
             ttl_dns_cache=300,
