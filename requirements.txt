@@ -1,8 +1,29 @@
-aiohttp==3.9.1
+# Pinned to exactly what the production service runs: the Pi's /usr/bin/python3
+# with its apt packages (python3-aiohttp, python3-bs4, ...), no venv. These pins
+# follow the Pi's apt, not PyPI. After an apt upgrade on the Pi, run
+#   /usr/bin/python3 -s scripts/check_pinned_deps.py
+# there; it exits non-zero when the installed versions no longer match these pins.
+# (Every line has to be an exact `name==version` pin, or the check refuses it.)
+aiohttp==3.13.3
 aiofiles==25.1.0
-beautifulsoup4==4.15.0
+beautifulsoup4==4.14.3
+# apt's python3-lru-dict is "1.5.0", but its metadata reports 1.4.1, and PyPI has
+# no 1.5.0, so 1.4.1 is the only version pip and the check can both name.
 lru-dict==1.4.1
 
 # optional: enables memory-usage logging in check_memory_usage(); the
 # service runs fine without it (import is wrapped in try/except)
-psutil==7.2.2
+psutil==7.1.0
+
+# Transitive dependencies, pinned too so that a laptop venv and CI resolve the
+# same versions as the Pi instead of the newest ones on PyPI.
+aiohappyeyeballs==2.6.1
+aiosignal==1.4.0
+attrs==25.4.0
+frozenlist==1.8.0
+idna==3.11
+multidict==6.4.3
+propcache==0.3.1
+soupsieve==2.8.3
+typing_extensions==4.15.0
+yarl==1.22.0

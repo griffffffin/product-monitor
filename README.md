@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/griffffffin/product-monitor/actions/workflows/tests.yml/badge.svg)](https://github.com/griffffffin/product-monitor/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](.python-version)
 
 An asyncio-based Python scraper that watches five Hungarian secondhand marketplaces for specific products under a price ceiling, and emails a summary whenever something new shows up or an existing listing drops in price. Two optional *deal watchers* do the same for new-retail offers: coupon price boxes on xiaomiplanet.sk (checked every few minutes, since coupon stock can sell out fast) and the promotion pages of asuspromo.hu.
 
@@ -40,7 +40,7 @@ Code, comments, and this README are in English. Log messages, exception text, an
 pip install -r requirements.txt
 ```
 
-(or `pip install -e .` — the project has proper `pyproject.toml` packaging metadata and exposes a `product-monitor` console script. Use an editable install: the config file, and for manual runs the state files, are looked up in the project root next to the `product_monitor/` package, so a copy installed into `site-packages` wouldn't find them. Production on the Pi doesn't pip-install either way, the systemd unit just invokes `python3 -m product_monitor.main` directly against the deployed package, with the dependencies from the system Python)
+(or `pip install -e .` — the project has proper `pyproject.toml` packaging metadata and exposes a `product-monitor` console script. Use an editable install: the config file, and for manual runs the state files, are looked up in the project root next to the `product_monitor/` package, so a copy installed into `site-packages` wouldn't find them. Production on the Pi doesn't pip-install either way, the systemd unit just invokes `python3 -m product_monitor.main` directly against the deployed package, with the dependencies from the system Python. `requirements.txt` pins exactly the versions the Pi's apt packages provide, so a dev venv runs what production runs, see [Pins = the Pi's packages](#pins--the-pis-packages))
 
 For a manual run, set the following environment variables (see `.env.example`); as a systemd service the same five keys come from a credential file instead, see [Running as a service](#running-as-a-service):
 
@@ -173,7 +173,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-260 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart), and the startup gates (state directory, mail credential parsing, `--check` and exit code 78, no import-time side effects).
+296 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart), the startup gates (state directory, mail credential parsing, `--check` and exit code 78, no import-time side effects), and the pinned-versions check (it has to fail on every kind of drift).
 
 ### Self-check: catching a silent break
 
@@ -199,7 +199,7 @@ python3 scripts/live_smoke_check.py
 
 Runs all 5 scrapers (plus the deal watchers' probes) for real, against the live sites, with no price/term filtering beyond a generic sanity search, and no email/database side effects. Reports a raw-card count and a matched count per site, so a broken selector (raw count drops to 0) is distinguishable from "genuinely nothing in stock right now" (matched count is 0 but raw isn't). Exits non-zero on a real failure. This is the same code the daily self-check above runs (`product_monitor/health_check.py`) — a bug in one can't hide a bug in the other.
 
-Note on CI: the weekly scheduled run of this check happens on GitHub's hosted runners, whose IP ranges some of these sites block outright (a red run has already been a false alarm repeatedly, with all sites healthy from a home connection minutes later). Treat a failure there as a prompt to run the check yourself, not as proof of a break. The in-service daily self-check runs from the same network as the real scraper, so it doesn't have this problem — which is precisely why it exists.
+Note on CI: the on-demand GitHub Actions run of this check (there's no scheduled one any more) happens on GitHub's hosted runners, whose IP ranges some of these sites block outright (a red run has already been a false alarm repeatedly, with all sites healthy from a home connection minutes later). Treat a failure there as a prompt to run the check yourself, not as proof of a break. The in-service daily self-check runs from the same network as the real scraper, so it doesn't have this problem — which is precisely why it exists.
 
 This isn't a theoretical safeguard. In July 2026, jofogas.hu was rebuilt on a Next.js/React frontend, and the scraper's DOM selectors (`div.general-item`, `id="listid_*"`) stopped matching anything — silently. No exception, no error log, just permanently zero Jofogas results every cycle, for an unknown length of time. The static-fixture unit tests didn't catch it (the fixtures still matched the *old* structure they were written against); only running the live smoke check against the real site did. The fix — parsing the `__NEXT_DATA__` JSON blob the page now embeds its listing data in, instead of scraping the DOM — is in `product_monitor/scrapers/jofogas.py`; the incident is written up in full in `CLAUDE.md`.
 
@@ -219,7 +219,7 @@ make install-dev
 make check   # test + lint + typecheck + format --check, all in one go
 ```
 
-CI runs the test suite against Python 3.11, 3.12, and 3.13, plus a separate lint job (formatting/lint/type-check). A second workflow runs the live smoke check on a weekly schedule (and on demand from the Actions tab), so a silent site redesign like the Jofogas one above gets caught automatically, not just whenever someone happens to run it by hand.
+CI runs the test suite on one Python version, the one production runs (3.14, read from `.python-version`), with the pinned dependencies, after first checking that the installed versions really are the pinned ones; plus a separate lint job (formatting/lint/type-check). A second workflow runs the live smoke check on demand from the Actions tab (not on a schedule, see the note above).
 
 Optionally, install the [pre-commit](https://pre-commit.com/) hooks to run the same checks automatically before every commit, instead of only in CI:
 
@@ -228,7 +228,17 @@ pip install pre-commit
 pre-commit install
 ```
 
-Dependency updates (both Python packages and the CI workflow's own actions) are handled by [Dependabot](.github/dependabot.yml), which opens a PR automatically on a weekly schedule. These are reviewed manually, never auto-merged: a green CI run only proves the network-free unit tests still pass, not that the real scrapers still work against the live sites — any `aiohttp`/`beautifulsoup4`/other network-facing bump gets a `scripts/live_smoke_check.py` run first.
+Dependency updates for the dev tools and the CI workflow's own actions are handled by [Dependabot](.github/dependabot.yml), which opens a PR automatically on a weekly schedule. These are reviewed manually, never auto-merged. The runtime pins are deliberately left out of it: they follow the Pi's apt packages, not PyPI (see below).
+
+### Pins = the Pi's packages
+
+Production runs the Raspberry Pi's `/usr/bin/python3` with its apt packages (`python3-aiohttp`, `python3-bs4`, ...), not a venv. `requirements.txt` pins exactly those versions, the transitive ones (`yarl`, `multidict`, `soupsieve`, ...) included, and `.python-version` names that Python, so a dev venv and CI test what actually runs. When the Pi's packages change (an apt upgrade), this check notices — run it on the Pi with the system Python:
+
+```bash
+/usr/bin/python3 -s scripts/check_pinned_deps.py
+```
+
+It compares every pin with the installed version and the interpreter with `.python-version`, and exits non-zero on any difference (CI runs it too, against its own install). The fix is then to move the pins to the new versions (and run the tests and the live smoke check on them), not the other way round. Two limits: a Debian/Ubuntu-only change that keeps the upstream version (a security backport such as `+esm1`, a rebuild) has nothing pip could pin, so it doesn't show; and `multidict`/`propcache` at these versions have no prebuilt wheels for Python 3.14 on PyPI; pip builds them from source, which (checked on an x86 laptop) gives their pure-Python implementations, while the Pi runs their C extensions.
 
 ## Architecture
 
@@ -252,8 +262,9 @@ product_monitor/
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle; also runs the deal watchers (XiaomiPlanet as a separate asyncio task)
 └── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed): runs the startup gates (`preflight()`, also all that `--check` does), then the monitor
 
-tests/                    — 260 unit tests, no network calls (see Tests above)
-scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
+tests/                    — 296 unit tests, no network calls (see Tests above)
+scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py;
+                            check_pinned_deps.py, installed versions vs. the pins (run on the Pi)
 ```
 
 ## A note on how this was built

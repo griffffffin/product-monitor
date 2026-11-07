@@ -7,13 +7,14 @@ name = "product-monitor"
 version = "1.0.0"
 description = "Asyncio scraper that watches four Hungarian secondhand marketplaces for specific products under a price ceiling and emails a summary of new/cheaper listings"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 authors = [{ name = "David Afra" }]
-dependencies = ["aiohttp==3.9.1", "aiofiles==25.1.0", "beautifulsoup4==4.15.0", "lru-dict==1.4.1"]
+# Same pins as requirements.txt (the Pi's apt versions); the transitive pins live only there.
+dependencies = ["aiohttp==3.13.3", "aiofiles==25.1.0", "beautifulsoup4==4.14.3", "lru-dict==1.4.1"]
 
 [project.optional-dependencies]
-memory-logging = ["psutil==7.2.2"]
+memory-logging = ["psutil==7.1.0"]
 dev = [
     "pytest==9.1.1",
     "black==26.5.1",
@@ -33,11 +34,13 @@ include = ["product_monitor*"]
 
 [tool.black]
 line-length = 100
+# Deliberately not py314: that target rewrites `except (A, B):` into the 3.14-only
+# unparenthesized form all over the package, churn with no benefit.
 target-version = ["py311"]
 
 [tool.ruff]
 line-length = 100
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 ignore_missing_imports = true
