@@ -16,7 +16,7 @@ I wanted to know the moment a specific used Xbox Series S, a particular laptop c
 - Filters by a per-search price ceiling and, optionally, search terms, a lower price bound (`min_price`), and exclusion terms (`exclude_terms`) that drop unwanted false matches
 - Detects both **new** listings and **price changes** on listings it's already seen
 - Sends a single, grouped-by-site email per check cycle (every 3 hours by default) via Gmail SMTP
-- Persists seen listings to a local JSON file: batch-written, atomically replaced, with a `/tmp` fallback location if the primary data directory isn't writable
+- Persists seen listings to a JSON file in its state directory: batch-written, atomically replaced. A missing or unwritable state directory stops it at startup (exit code 78) — there is deliberately no fallback location, which would quietly lose the seen-listings history and re-email everything
 - Checks its own scrapers once a day against the live sites (see [Self-check](#self-check-catching-a-silent-break)) and emails **only** when one is actually broken
 - Optionally watches two new-retail deal sources on their own schedules — see [Deal watchers](#deal-watchers)
 
@@ -40,9 +40,9 @@ Code, comments, and this README are in English. Log messages, exception text, an
 pip install -r requirements.txt
 ```
 
-(or `pip install .` / `pip install -e .` — the project has proper `pyproject.toml` packaging metadata and exposes a `product-monitor` console script; production on the Pi doesn't pip-install either way, the systemd unit just invokes `python3 -m product_monitor.main` directly against the deployed package)
+(or `pip install -e .` — the project has proper `pyproject.toml` packaging metadata and exposes a `product-monitor` console script. Use an editable install: the config file, and for manual runs the state files, are looked up in the project root next to the `product_monitor/` package, so a copy installed into `site-packages` wouldn't find them. Production on the Pi doesn't pip-install either way, the systemd unit just invokes `python3 -m product_monitor.main` directly against the deployed package, with the dependencies from the system Python)
 
-Set the following environment variables (see `.env.example`):
+For a manual run, set the following environment variables (see `.env.example`); as a systemd service the same five keys come from a credential file instead, see [Running as a service](#running-as-a-service):
 
 ```
 SMTP_SERVER=smtp.gmail.com
@@ -52,7 +52,7 @@ SENDER_PASSWORD=your-app-password
 RECIPIENT_EMAIL=you@example.com
 ```
 
-Copy `product-monitor-config.example.json` to `product-monitor-config.json` and fill in what you actually want to watch:
+Copy `product-monitor-config.example.json` to `product-monitor-config.json` (in the project root — it's found from the package's location, not from the working directory) and fill in what you actually want to watch:
 
 ```json
 {
@@ -87,9 +87,27 @@ Then:
 python3 -m product_monitor.main
 ```
 
-(or just `product-monitor`, if installed via `pip install .`/`pip install -e .`)
+(or just `product-monitor`, if installed via `pip install -e .`)
 
-It runs forever (a `while` loop with an interruptible sleep between cycles) until it receives `SIGTERM`/`SIGINT` — in production that's a systemd service, see `CLAUDE.md` for the unit file.
+It runs forever (a `while` loop with an interruptible sleep between cycles) until it receives `SIGTERM`/`SIGINT` — in production that's a systemd service, see below.
+
+A manual run keeps its state (`seen-products.json`, `health-check-state.json`, `deal-state.json`) in the project root, so it is a development run: it never sees the service's state.
+
+### Running as a service
+
+Under systemd (detected by `INVOCATION_ID`) the monitor expects an unprivileged, sandboxed unit with a read-only code directory, and checks this at startup:
+
+- **State**: `STATE_DIRECTORY` (systemd `StateDirectory=`) is mandatory — one absolute, existing, writable directory. It is the only place the monitor writes to: the three state files above, their `.tmp` files during an atomic save, and a `.backup-<time>` copy of an oversized database.
+- **Mail settings**: a systemd credential named `smtp` (`ImportCredential=smtp` or `LoadCredential=smtp:…`), read from `$CREDENTIALS_DIRECTORY/smtp`. One `KEY=VALUE` per line with the same five keys as above; the value is taken literally (no quotes, no `$`/`\` escapes — a password with spaces or `#` is written as is), lines starting with `#` and empty lines are skipped, CRLF is fine, and any other key is ignored. Environment variables are not used in this mode.
+- **Logging**: to stdout/stderr — point `StandardOutput=`/`StandardError=` at a file or the journal; the code doesn't open a log file of its own in this mode.
+
+Exit codes: `0` clean shutdown, `1` unexpected crash, **`78` (`EX_CONFIG`) configuration error** — a missing/unwritable state directory, a missing credential or one without `SMTP_SERVER`/`SENDER_EMAIL`/`SENDER_PASSWORD`/`RECIPIENT_EMAIL`, or a missing/invalid config file. Every failing check is reported (key names only, never a value). Pair it with `RestartPreventExitStatus=78`, so a broken configuration leaves the unit failed instead of restarting it every minute.
+
+To run just those startup checks and exit (0 or 78) — no network, no email, nothing written except a probe file that removes itself:
+
+```bash
+python3 -m product_monitor.main --check
+```
 
 ### Deal watchers
 
@@ -155,7 +173,7 @@ The email itself is grouped by site. The real emails are in Hungarian (the owner
 python3 -m pytest tests/ -v
 ```
 
-194 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart).
+260 unit tests, no network calls or real email sends — price parsing, text normalization/matching, one dedicated fixture-based parsing test per site (all 5, plus Vinted's condition-vocabulary, seller-gate/cache, and session-token handling), dedup/cleanup/save-load round-tripping, email body formatting, the daily self-check's failure/no-failure logic, retry, consecutive-failure gate, and once-a-day scheduling, and the deal watchers (price-box/promotion parsing against fixtures mirroring the live markup, the alert rules, carrier-article selection, first-run summary, promotion change tracking, state persistence across a restart), and the startup gates (state directory, mail credential parsing, `--check` and exit code 78, no import-time side effects).
 
 ### Self-check: catching a silent break
 
@@ -219,7 +237,7 @@ Split into a package (as of the 2026-07-03 modularization — originally a singl
 ```
 product_monitor/
 ├── __init__.py          — re-exports the public API (SearchConfig, Advertisement, MonitorConfig, the scrapers, MultiMarketplaceMonitor, EMAIL_CONFIG)
-├── config.py             — EMAIL_CONFIG (env-var-driven), LOG_FILE
+├── config.py             — the startup gates (state directory, mail credential), paths derived from the package location (config file, manual-run log file), EMAIL_CONFIG
 ├── models.py              — SearchConfig / Advertisement / MonitorConfig dataclasses
 ├── email_notifier.py      — EmailNotifier (Gmail SMTP, sent from a thread pool so it doesn't block the event loop)
 ├── scrapers/
@@ -232,9 +250,9 @@ product_monitor/
 │   └── state.py              — deal-state.json (one section per watcher, atomic writes)
 ├── health_check.py         — the live self-check: hits every site, tells a broken scraper apart from an empty market (used by both the daily in-service check and scripts/live_smoke_check.py)
 ├── monitor.py              — MultiMarketplaceMonitor: loads config, runs all configured searches concurrently (bounded by a semaphore), dedupes against the seen-ads JSON file, sends one grouped notification email, cleans up old entries, runs the daily self-check, sleeps until the next cycle; also runs the deal watchers (XiaomiPlanet as a separate asyncio task)
-└── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed)
+└── main.py                  — entry point (`product_monitor.main:main`, also exposed as the `product-monitor` console script if installed): runs the startup gates (`preflight()`, also all that `--check` does), then the monitor
 
-tests/                    — 194 unit tests, no network calls (see Tests above)
+tests/                    — 260 unit tests, no network calls (see Tests above)
 scripts/                  — live_smoke_check.py, the manual/CI entry point to health_check.py
 ```
 

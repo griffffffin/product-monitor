@@ -14,7 +14,7 @@ import aiofiles
 import aiohttp
 
 from . import health_check
-from .config import LOG_FILE
+from .config import LOG_FILE, is_service_mode
 from .deals import AsusPromoWatcher, DealState, XiaomiPlanetWatcher
 from .email_notifier import EmailNotifier
 from .models import Advertisement, MonitorConfig
@@ -29,13 +29,15 @@ from .scrapers import (
 
 
 class MultiMarketplaceMonitor:
-    def __init__(self, config_path: str):
-        self.config = self.load_config(config_path)
-        self.setup_logging()
+    def __init__(self, config: MonitorConfig, data_dir: str):
+        """config and data_dir come from main.preflight(), whose startup gates
+        have already checked them (data_dir exists and is writable). Nothing
+        here touches the filesystem; main() calls setup_logging() itself."""
+        self.config = config
         self.email_notifier = EmailNotifier(self.config.email)
 
-        # Set up the data directory
-        self.data_dir = self._get_data_directory()
+        # The state directory - every file this process writes lives here
+        self.data_dir = data_dir
         self.seen_ads_file = os.path.join(self.data_dir, "seen-products.json")
 
         self.seen_ads: Dict[str, Advertisement] = {}
@@ -64,48 +66,12 @@ class MultiMarketplaceMonitor:
         self.session: Optional[aiohttp.ClientSession] = None
         self.scrapers: Dict[str, BaseScraper] = {}
 
-    def _get_data_directory(self) -> str:
-        """Determine the appropriate data directory"""
-        # Service mode
-        if os.getenv("INVOCATION_ID"):
-            data_dir = "/opt/product-monitor"
-        else:
-            # Dev mode - the project root, not the product_monitor/ package
-            # directory (__file__ here is monitor.py's own path, one level
-            # deeper than when this was still product-monitor.py at the
-            # project root)
-            data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-        # Create the directory if it doesn't exist
-        os.makedirs(data_dir, exist_ok=True)
-
-        # Check write permissions
-        if not os.access(data_dir, os.W_OK):
-            # Fall back to /tmp
-            data_dir = "/tmp/product-monitor"
-            os.makedirs(data_dir, exist_ok=True)
-            logging.warning(f"Data könyvtár nem írható, fallback használata: {data_dir}")
-
-        logging.info(f"Data könyvtár: {data_dir}")
-        return data_dir
-
-    def load_config(self, config_path: str) -> MonitorConfig:
-        """Load the configuration"""
-        with open(config_path, "r", encoding="utf-8") as f:
-            return MonitorConfig.from_dict(json.load(f))
-
     async def load_seen_ads(self) -> Dict[str, Advertisement]:
         """Async load of already-seen listings"""
         try:
             if not os.path.exists(self.seen_ads_file):
-                # Look for a backup file
-                backup_file = "/tmp/product-monitor-backup/seen-products.json"
-                if os.path.exists(backup_file):
-                    logging.info("Backup fájl találva, betöltés...")
-                    self.seen_ads_file = backup_file
-                else:
-                    logging.info("Új adatbázis létrehozása")
-                    return {}
+                logging.info("Új adatbázis létrehozása")
+                return {}
 
             file_size = os.path.getsize(self.seen_ads_file)
             if file_size > 50 * 1024 * 1024:  # 50MB limit
@@ -177,6 +143,10 @@ class MultiMarketplaceMonitor:
                 logging.debug(f"Mentés sikeres: {len(self.seen_ads)} hirdetés")
 
             except PermissionError as e:
+                # No alternative location on purpose: an unwritable state
+                # directory is a configuration error, caught by the startup gate
+                # (config.state_directory). Mid-run, _ads_changed stays set, so
+                # the next cycle retries the save.
                 logging.error(f"Jogosultsági hiba mentés közben: {e}")
                 # Delete the temp file
                 if os.path.exists(temp_file):
@@ -184,8 +154,6 @@ class MultiMarketplaceMonitor:
                         os.remove(temp_file)
                     except OSError:
                         pass
-                # Try an alternative save location
-                await self._try_backup_save()
 
         except Exception as e:
             logging.error(f"Hiba látott hirdetések mentésekor: {e}")
@@ -194,25 +162,6 @@ class MultiMarketplaceMonitor:
                     os.remove(temp_file)
                 except OSError:
                     pass
-
-    async def _try_backup_save(self):
-        """Backup save to /tmp"""
-        try:
-            backup_dir = "/tmp/product-monitor-backup"
-            os.makedirs(backup_dir, exist_ok=True)
-
-            backup_file = os.path.join(backup_dir, "seen-products.json")
-
-            # Simple JSON save
-            data = {ad_id: asdict(ad) for ad_id, ad in self.seen_ads.items()}
-
-            async with aiofiles.open(backup_file, "w", encoding="utf-8") as f:
-                await f.write(json.dumps(data, ensure_ascii=False, indent=2))
-
-            logging.info(f"Backup mentés sikeres: {backup_file}")
-
-        except Exception as e:
-            logging.error(f"Backup mentés is sikertelen: {e}")
 
     def cleanup_old_ads(self):
         """Delete old listings"""
@@ -376,18 +325,15 @@ class MultiMarketplaceMonitor:
 
         formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-        # Use the service log file
-        log_file = LOG_FILE if "LOG_FILE" in globals() else "product-monitor.log"
-
-        if os.getenv("INVOCATION_ID"):
-            # Service mode: stdout only, redirected by systemd
+        if is_service_mode():
+            # Service mode: stdout only - systemd appends it to the service log
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
         else:
             # Development mode: file + console
             file_handler = RotatingFileHandler(
-                log_file,
+                LOG_FILE,
                 maxBytes=self.config.max_log_size_mb * 1024 * 1024,
                 backupCount=5,
                 encoding="utf-8",
@@ -595,6 +541,7 @@ class MultiMarketplaceMonitor:
     async def run(self):
         """Async continuous monitoring"""
         logging.info("Product Monitor indítása...")
+        logging.info(f"Állapot-könyvtár: {self.data_dir}")
 
         # Initialize the session and scrapers
         await self.create_session()

@@ -1,9 +1,10 @@
 import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
-from .config import EMAIL_CONFIG
+from .config import EMAIL_CONFIG, ConfigError
 
 
 @dataclass
@@ -154,6 +155,25 @@ class MonitorConfig:
     # alert immediately (the old behaviour).
     health_check_min_consecutive: int = 2
     deals: DealsConfig = field(default_factory=DealsConfig)
+
+    @classmethod
+    def from_file(cls, path: str) -> "MonitorConfig":
+        """Startup gate: the config file must be readable and valid, else ConfigError."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            raise ConfigError(f"hiányzik a beállítás-fájl: {path}") from None
+        except (OSError, UnicodeDecodeError) as e:
+            raise ConfigError(f"a beállítás-fájl nem olvasható: {path} ({e})") from None
+        except json.JSONDecodeError as e:
+            raise ConfigError(f"a beállítás-fájl nem érvényes JSON: {path} ({e})") from None
+        try:
+            return cls.from_dict(data)
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            raise ConfigError(
+                f"a beállítás-fájl szerkezete hibás: {path} ({type(e).__name__}: {e})"
+            ) from None
 
     @classmethod
     def from_dict(cls, data: dict):

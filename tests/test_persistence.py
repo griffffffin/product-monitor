@@ -1,11 +1,9 @@
 """Tests for the seen-ads persistence/dedup/cleanup logic. These construct a
-bare MultiMarketplaceMonitor via object.__new__() to skip __init__ (which
-would call load_config()/setup_logging() and touch real files/loggers) and
-only set the handful of attributes each method actually needs.
+bare MultiMarketplaceMonitor via object.__new__() and only set the handful of
+attributes each method actually needs.
 """
 
 import asyncio
-import os
 import types
 from datetime import datetime, timedelta
 
@@ -109,14 +107,6 @@ class TestSeenAdsRoundTrip:
         assert not seen_ads_file.exists()
 
     def test_load_missing_file_returns_empty_dict(self, tmp_path):
-        backup_file = "/tmp/product-monitor-backup/seen-products.json"
-        if os.path.exists(backup_file):
-            import pytest
-
-            pytest.skip(
-                "global backup file exists on this machine, would make the test order-dependent"
-            )
-
         loader = bare_monitor(seen_ads_file=str(tmp_path / "does-not-exist.json"))
         loaded = asyncio.run(loader.load_seen_ads())
         assert loaded == {}
